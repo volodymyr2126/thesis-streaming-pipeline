@@ -27,6 +27,13 @@ services:
       # Replace CLUSTER_ID with a unique base64 UUID using "bin/kafka-storage.sh random-uuid"
       # See https://docs.confluent.io/kafka/operations-tools/kafka-tools.html#kafka-storage-sh
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pipeline
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -37,31 +44,27 @@ services:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
     networks:
       - pipeline
 
-  postgres:
-    image: postgres:15-alpine
+  producer:
+    build: ./producers
+    container_name: event-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports:
-      - "5432:5432"
+      - "8000:8000"
     environment:
-      POSTGRES_USER: datauser
-      POSTGRES_PASSWORD: datapassword
-      POSTGRES_DB: analytics
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      KAFKA_BOOTSTRAP_SERVERS: broker:29092
+      KAFKA_TOPIC: raw-events
+      DEFAULT_EVENT_RATE: 10
+      MAX_EVENT_RATE: 10000
     networks:
       - pipeline
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U datauser"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    restart: unless-stopped
 
 networks:
   pipeline:
     driver: bridge
-
-volumes:
-  postgres_data:
