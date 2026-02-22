@@ -16,6 +16,11 @@ on:
 jobs:
   terraform-validate:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        directory:
+          - infrastructure/bootstrap
+          - infrastructure/environments/dev
 
     steps:
       - name: Checkout code
@@ -27,16 +32,16 @@ jobs:
           terraform_version: 1.6.0
 
       - name: Terraform Format Check
-        run: |
-          cd infrastructure
-          terraform fmt -check -recursive
-        continue-on-error: true
+        run: terraform fmt -check -recursive
+        working-directory: ${{ matrix.directory }}
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: ${{ matrix.directory }}
 
       - name: Terraform Validate
-        run: |
-          cd infrastructure
-          terraform validate
-        continue-on-error: true
+        run: terraform validate
+        working-directory: ${{ matrix.directory }}
 
   detect-secrets:
     runs-on: ubuntu-latest
