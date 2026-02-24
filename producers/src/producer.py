@@ -67,7 +67,7 @@ class EventProducer:
             timestamp=int(time.time() * 1000),  # milliseconds
             user_id=random.randint(MIN_USER_ID, MAX_USER_ID),
             event_type=random.choice(types),
-            value=random.randint(MIN_VALUE, MAX_VALUE),
+            event_value=random.randint(MIN_VALUE, MAX_VALUE),
             metadata={
                 "source": "producer-service",
                 "version": "1.0"

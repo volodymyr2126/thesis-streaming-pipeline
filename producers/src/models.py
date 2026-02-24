@@ -9,7 +9,7 @@ class Event(BaseModel):
     timestamp: int  # Unix timestamp in milliseconds
     user_id: int
     event_type: str
-    value: int
+    event_value: int
     metadata: Optional[dict] = None
 
 
