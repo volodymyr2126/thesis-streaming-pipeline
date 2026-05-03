@@ -1,0 +1,700 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Real-time air quality monitoring across Ukrainian cities",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "air-quality",
+    "streaming"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "All"
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "timescaledb"
+        },
+        "definition": "SELECT DISTINCT city FROM sensor_aggregates ORDER BY city",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "All",
+        "label": "City",
+        "multi": false,
+        "name": "city",
+        "options": [],
+        "query": "SELECT DISTINCT city FROM sensor_aggregates ORDER BY city",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Air Quality Monitoring",
+  "uid": "air-quality-monitoring",
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Sensor Map \u2014 Latest AQI",
+      "type": "geomap",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (sensor_id)\n  station_name,\n  latitude,\n  longitude,\n  ROUND(avg_aqi::numeric, 1) AS avg_aqi,\n  reading_count\nFROM sensor_aggregates\nORDER BY sensor_id, window_start DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 4
+              },
+              {
+                "color": "dark-purple",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "basemap": {
+          "config": {},
+          "name": "Basemap",
+          "type": "default"
+        },
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showDebug": false,
+          "showScale": false,
+          "showZoom": true
+        },
+        "layers": [
+          {
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": {
+                  "field": "avg_aqi",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.8,
+                "rotation": {
+                  "fixed": 0,
+                  "mode": "fixed"
+                },
+                "size": {
+                  "field": "reading_count",
+                  "fixed": 5,
+                  "max": 30,
+                  "min": 5,
+                  "mode": "field"
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "textConfig": {
+                  "fontSize": 12,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            },
+            "location": {
+              "latitude": "latitude",
+              "longitude": "longitude",
+              "mode": "coords"
+            },
+            "name": "Sensors",
+            "tooltip": true,
+            "type": "markers"
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        },
+        "view": {
+          "allLayers": true,
+          "id": "coords",
+          "lat": 49,
+          "lon": 32,
+          "zoom": 6
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Top 10 Most Polluted Cities \u2014 PM2.5",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  city AS metric,\n  ROUND(AVG(avg_pm2_5)::numeric, 2) AS \"PM2.5\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\n  AND city IN (\n    SELECT city FROM sensor_aggregates\n    WHERE window_start > NOW() - INTERVAL '1 hour'\n    GROUP BY city ORDER BY AVG(avg_pm2_5) DESC LIMIT 10\n  )\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          },
+          "unit": "\u00b5g/m\u00b3"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Top 10 Cleanest Cities \u2014 PM2.5",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  city AS metric,\n  ROUND(AVG(avg_pm2_5)::numeric, 2) AS \"PM2.5\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\n  AND city IN (\n    SELECT city FROM sensor_aggregates\n    WHERE window_start > NOW() - INTERVAL '1 hour'\n    GROUP BY city ORDER BY AVG(avg_pm2_5) ASC LIMIT 10\n  )\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          },
+          "unit": "\u00b5g/m\u00b3"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Top 10 Most Polluted Cities \u2014 AQI",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  city AS metric,\n  ROUND(AVG(avg_aqi)::numeric, 2) AS \"AQI\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\n  AND city IN (\n    SELECT city FROM sensor_aggregates\n    WHERE window_start > NOW() - INTERVAL '1 hour'\n    GROUP BY city ORDER BY AVG(avg_aqi) DESC LIMIT 10\n  )\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Top 10 Cleanest Cities \u2014 AQI",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  city AS metric,\n  ROUND(AVG(avg_aqi)::numeric, 2) AS \"AQI\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\n  AND city IN (\n    SELECT city FROM sensor_aggregates\n    WHERE window_start > NOW() - INTERVAL '1 hour'\n    GROUP BY city ORDER BY AVG(avg_aqi) ASC LIMIT 10\n  )\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Active Alerts",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 14,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  created_at                         AS \"Time\",\n  city                               AS \"City\",\n  event_type                         AS \"Event\",\n  severity                           AS \"Severity\",\n  ROUND(peak_pm2_5::numeric, 1)      AS \"Peak PM2.5\",\n  ROUND(avg_aqi::numeric, 0)         AS \"AQI\",\n  trend                              AS \"Trend\",\n  duration_minutes                   AS \"Duration (min)\",\n  consecutive_windows                AS \"Windows\"\nFROM air_quality_alerts\nWHERE $__timeFilter(created_at)\n  AND city = CASE WHEN '${city:raw}' = 'All' THEN city ELSE '${city:raw}' END\nORDER BY created_at DESC\nLIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Event"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "onset": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "onset"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "recovery": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "recovery"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Severity"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "good": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "Good"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "fair": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Fair"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "moderate": {
+                        "color": "orange",
+                        "index": 2,
+                        "text": "Moderate"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "poor": {
+                        "color": "red",
+                        "index": 3,
+                        "text": "Poor"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "very_poor": {
+                        "color": "dark-purple",
+                        "index": 4,
+                        "text": "Very Poor"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Time"
+          }
+        ],
+        "footer": {
+          "show": false
+        },
+        "frameIndex": 0,
+        "showHeader": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "Alert Onsets per 5 min",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 26
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(created_at, '5m'),\n  city AS metric,\n  COUNT(*) AS \"Alerts\"\nFROM air_quality_alerts\nWHERE event_type = 'onset'\n  AND $__timeFilter(created_at)\n  AND city = CASE WHEN '${city:raw}' = 'All' THEN city ELSE '${city:raw}' END\nGROUP BY 1, 2\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Pipeline Throughput (events per window)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  SUM(reading_count) AS \"Events\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Pipeline Latency (Flink window close \u2192 TimescaleDB insert)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "timescaledb"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "timescaledb"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  $__timeGroupAlias(window_start, '1m'),\n  ROUND(AVG(EXTRACT(EPOCH FROM (inserted_at - window_end)) * 1000)::numeric, 0) AS \"Latency (ms)\"\nFROM sensor_aggregates\nWHERE $__timeFilter(window_start)\n  AND inserted_at > window_end\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
+          "unit": "ms",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "showLegend": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,279 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Real-time air quality monitoring across Ukrainian cities — AWS / TimescaleDB",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["air-quality", "streaming", "aws"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "All", "value": "All" },
+        "datasource": { "type": "postgres", "uid": "timescaledb" },
+        "definition": "SELECT DISTINCT city FROM sensor_aggregates ORDER BY city ASC",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "City",
+        "multi": false,
+        "name": "city",
+        "options": [],
+        "query": "SELECT DISTINCT city FROM sensor_aggregates ORDER BY city ASC",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Air Quality Monitoring",
+  "uid": "air-quality-monitoring",
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Sensor Map — Latest AQI",
+      "type": "geomap",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT sensor_id, station_name, AVG(latitude) AS latitude, AVG(longitude) AS longitude, AVG(avg_aqi) AS avg_aqi, SUM(reading_count) AS reading_count FROM sensor_aggregates WHERE $__timeFilter(window_start) GROUP BY sensor_id, station_name ORDER BY avg_aqi DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",       "value": null },
+              { "color": "yellow",      "value": 2 },
+              { "color": "orange",      "value": 3 },
+              { "color": "red",         "value": 4 },
+              { "color": "dark-purple", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "basemap": { "config": {}, "name": "Basemap", "type": "default" },
+        "controls": { "mouseWheelZoom": true, "showAttribution": true, "showDebug": false, "showScale": false, "showZoom": true },
+        "layers": [
+          {
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": { "field": "avg_aqi", "fixed": "dark-green" },
+                "opacity": 0.8,
+                "rotation": { "fixed": 0, "mode": "fixed" },
+                "size": { "field": "reading_count", "fixed": 5, "max": 30, "min": 5, "mode": "field" },
+                "symbol": { "fixed": "img/icons/marker/circle.svg", "mode": "fixed" },
+                "textConfig": { "fontSize": 12, "offsetX": 0, "offsetY": 0, "textAlign": "center", "textBaseline": "middle" }
+              }
+            },
+            "location": { "latitude": "latitude", "longitude": "longitude", "mode": "coords" },
+            "name": "Sensors",
+            "tooltip": true,
+            "type": "markers"
+          }
+        ],
+        "tooltip": { "mode": "details" },
+        "view": { "allLayers": true, "id": "coords", "lat": 49, "lon": 32, "zoom": 6 }
+      }
+    },
+    {
+      "id": 2,
+      "title": "PM2.5 by City",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT date_trunc('minute', window_start) AS \"time\", city, AVG(avg_pm2_5) AS \"PM2.5\" FROM sensor_aggregates WHERE $__timeFilter(window_start) GROUP BY 1, city ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 0 }, "unit": "µg/m³" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "AQI by City",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT date_trunc('minute', window_start) AS \"time\", city, AVG(avg_aqi) AS \"AQI\" FROM sensor_aggregates WHERE $__timeFilter(window_start) GROUP BY 1, city ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 0 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Active Alerts",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT timestamp AS \"Time\", city AS \"City\", event_type AS \"Event\", severity AS \"Severity\", ROUND(peak_pm2_5::numeric, 1) AS \"Peak PM2.5\", ROUND(avg_aqi::numeric, 2) AS \"AQI\", trend AS \"Trend\", duration_minutes AS \"Duration (min)\", consecutive_windows AS \"Windows\" FROM air_quality_alerts WHERE $__timeFilter(timestamp) ORDER BY timestamp DESC LIMIT 20",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Event" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-text" },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "onset":    { "color": "red",   "index": 0, "text": "onset"    } } },
+                  { "type": "value", "options": { "recovery": { "color": "green", "index": 1, "text": "recovery" } } }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Severity" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-background" },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "good":      { "color": "green",       "index": 0, "text": "Good"      } } },
+                  { "type": "value", "options": { "fair":      { "color": "yellow",      "index": 1, "text": "Fair"      } } },
+                  { "type": "value", "options": { "moderate":  { "color": "orange",      "index": 2, "text": "Moderate"  } } },
+                  { "type": "value", "options": { "poor":      { "color": "red",         "index": 3, "text": "Poor"      } } },
+                  { "type": "value", "options": { "very_poor": { "color": "dark-purple", "index": 4, "text": "Very Poor" } } }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "desc": true, "displayName": "Time" }],
+        "footer": { "show": false },
+        "showHeader": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "Alert Onsets per 5 min",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT date_trunc('hour', timestamp) + interval '5 min' * floor(date_part('minute', timestamp)::int / 5) AS \"time\", city, COUNT(*) AS \"Alerts\" FROM air_quality_alerts WHERE $__timeFilter(timestamp) AND event_type = 'onset' GROUP BY 1, city ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 70, "lineWidth": 0, "barAlignment": 0 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Pipeline Throughput (events per window)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 26 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT date_trunc('minute', window_start) AS \"time\", SUM(reading_count) AS \"Events\" FROM sensor_aggregates WHERE $__timeFilter(window_start) GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "green", "mode": "fixed" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "single" }, "legend": { "displayMode": "list" } }
+    },
+    {
+      "id": 7,
+      "title": "Pipeline Latency (window_start → TimescaleDB write)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "postgres", "uid": "timescaledb" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "timescaledb" },
+          "rawSql": "SELECT date_trunc('minute', window_start) AS \"time\", AVG(EXTRACT(EPOCH FROM (created_at - window_start)) * 1000) AS \"Latency (ms)\" FROM sensor_aggregates WHERE $__timeFilter(window_start) GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "unit": "ms",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "single" }, "legend": { "showLegend": false } }
+    }
+  ]
+}
