@@ -1,70 +1,66 @@
-% \chapter{Evaluation}
-%
-% This chapter evaluates the implemented pipeline against the two primary claims stated in the research objectives: the ability to sustain high-throughput ingestion across all monitored cities, and the delivery of end-to-end latency below one minute from sensor reading generation to stored aggregate.
-%
-% \section{Experimental Setup}
-%
-% All experiments were conducted on a single host machine (Apple M-series, X GB RAM) running all pipeline services via Docker Compose. No external infrastructure was used. The data source was a historical Parquet file replayed at configurable speed by the FastAPI producer, simulating continuous readings from 414 Ukrainian cities. End-to-end latency was instrumented via the \texttt{inserted\_at} timestamp column written to the \texttt{sensor\_aggregates} hypertable in TimescaleDB at the moment each aggregate record is persisted.
-%
-% \section{Throughput}
-%
-% % TODO: describe how you increased the replay rate and what you observed
-% The producer replay rate was increased stepwise to determine the maximum sustainable ingestion rate. At each rate, Kafka consumer lag and Flink checkpoint duration were monitored to confirm the pipeline was keeping up with incoming data. The system sustained a throughput of \textbf{24,000 records per minute} without observable backpressure or checkpoint degradation, covering all 414 cities with readings at sub-minute intervals.
-%
-% \section{End-to-End Latency}
-%
-% End-to-end latency is defined as the elapsed time between the close of a 60-second tumbling window and the moment the resulting aggregate is persisted to TimescaleDB, measured as \texttt{inserted\_at} $-$ \texttt{window\_end}. This metric captures processing time through Flink, serialization, and database write, and directly reflects the delay between a pollution event occurring and its data becoming queryable for alerting and visualization.
-%
-% % TODO: fill in actual numbers from your Grafana latency panel
-% Table~\ref{tab:latency-results} summarises the observed latency distribution under peak load.
-%
-% \begin{table}[H]
-% \centering
-% \caption{End-to-end latency at 24,000 records/min}
-% \label{tab:latency-results}
-% \begin{tabular}{|l|r|}
-% \hline
-% \textbf{Percentile} & \textbf{Latency (seconds)} \\
-% \hline
-% Median (p50) & TODO \\
-% p95          & TODO \\
-% p99          & TODO \\
-% \hline
-% \end{tabular}
-% \end{table}
-%
-% All observed values remained below 60 seconds, confirming the sub-minute latency objective stated in Section~\ref{sec:objectives}.
-%
-% % TODO: optionally include latency_throughput.png figure here
-% % \begin{figure}[H]
-% %     \centering
-% %     \includegraphics[width=\textwidth]{Figures/latency_throughput.png}
-% %     \caption{Pipeline throughput and end-to-end latency under peak load.}
-% %     \label{fig:latency-throughput}
-% % \end{figure}
-%
-% \section{Alert Detection}
-%
-% % TODO: describe the test scenario — what readings you injected to trigger alerts
-% Alert correctness was verified by replaying a sequence of readings with elevated pollutant concentrations designed to exceed the Z-score threshold. The Flink anomaly detection operator correctly identified onset conditions after ten consecutive anomalous windows and dispatched an alert email. Upon return to baseline readings, a recovery notification was issued after the corresponding ten-window recovery period. Figure~\ref{fig:alert-onset} and Figure~\ref{fig:alert-recovery} show the resulting alert emails captured in MailHog.
-%
-% \begin{figure}[H]
-%     \centering
-%     \begin{minipage}{0.48\textwidth}
-%         \centering
-%         \includegraphics[width=\textwidth]{Figures/fair_alert_example.png}
-%         \caption{Onset alert email triggered after sustained anomaly detection.}
-%         \label{fig:alert-onset}
-%     \end{minipage}
-%     \hfill
-%     \begin{minipage}{0.48\textwidth}
-%         \centering
-%         \includegraphics[width=\textwidth]{Figures/recovery_alert_example.png}
-%         \caption{Recovery alert email triggered after return to baseline readings.}
-%         \label{fig:alert-recovery}
-%     \end{minipage}
-% \end{figure}
-%
-% \section{Discussion}
-%
-% The results demonstrate that the implemented pipeline meets both primary objectives under the experimental conditions described. Several limitations of the evaluation should be noted. First, the data source is a replay of historical sensor readings rather than live hardware sensors, meaning network jitter and sensor failure scenarios are not represented. Second, all services were co-located on a single host, which eliminates network latency between components present in a distributed cloud deployment. At production scale — with ingestion distributed across Amazon MSK, processing on Amazon Managed Service for Apache Flink, and storage on Amazon RDS — latency characteristics would differ, though the architectural design preserves the same processing guarantees. Fault tolerance under node failure and cold-start recovery time were not measured and remain directions for future evaluation.
+\chapter{Evaluation}
+
+This chapter evaluates the implemented pipeline against the two primary claims stated in the research objectives: the ability to sustain high-throughput ingestion across all monitored cities, and the delivery of end-to-end latency below one minute from sensor reading generation to stored aggregate.
+
+\section{Experimental Setup}
+
+All experiments were conducted on a single host machine (Apple M-series, 16 GB RAM) running all pipeline services via Docker Compose. No external infrastructure was used. The data source was a historical Parquet file replayed at configurable speed by the FastAPI producer, simulating continuous readings from 414 Ukrainian cities. The speed multiplier was increased stepwise across nine test runs, with each run sustained until Kafka consumer lag and Flink checkpoint duration stabilised, confirming the pipeline was keeping pace with incoming data.
+
+End-to-end latency was instrumented via the \texttt{inserted\_at} timestamp column written to the \texttt{sensor\_aggregates} hypertable in TimescaleDB at the moment each aggregate record is persisted. Latency is defined as $\texttt{inserted\_at} - \texttt{window\_end}$: the elapsed time between the close of a 60-second tumbling window and the moment the resulting aggregate becomes queryable. This metric captures processing time through Flink, serialisation, and database write, and directly reflects the delay between a pollution event occurring and its data being available for alerting and visualisation. The producer overwrites historical timestamps with the current wall-clock time on emit, so the measurement reflects real elapsed time rather than compressed replay time.
+
+\section{Throughput}
+
+The producer replay rate was increased stepwise to determine the maximum sustainable ingestion rate. Table~\ref{tab:throughput-results} presents the complete set of tested configurations. The pipeline ingested data without observable backpressure or checkpoint degradation from 1x through 1000x, covering a range from 414 to 414,000 records per minute. At 10,000× the configured rate of 4.14 million records per minute could not be sustained; the producer became the bottleneck, capping effective throughput at approximately 1.79 million records per minute, as visible in Figure~\ref{fig:grafana-10000}.
+
+\begin{table}[H]
+\centering
+\caption{Pipeline throughput and end-to-end latency across tested replay speeds}
+\label{tab:throughput-results}
+\begin{tabular}{|r|r|r|r|}
+\hline
+\textbf{Speed multiplier} & \textbf{Records / min} & \textbf{p95 latency (s)} & \textbf{p99 latency (s)} \\
+\hline
+1×       &       414 & 37.10 & 37.60 \\
+5×       &     2{,}070 &  8.04 &  8.69 \\
+20×      &     8{,}280 &  7.39 &  7.86 \\
+60×      &    24{,}760 &  5.34 &  5.96 \\
+100×     &    41{,}400 &  5.90 &  6.35 \\
+200×     &    82{,}800 &  5.42 &  5.68 \\
+500×     &   207{,}000 &  5.27 &  5.88 \\
+1{,}000× &   414{,}000 &  5.43 &  5.66 \\
+10{,}000× & 1{,}790{,}000 & 13.00 & 13.65 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{Figures/evaluation/grafana_10000.png}
+    \caption{Grafana pipeline health panel at 10,000× replay speed: throughput plateaus at approximately 1.79 million records per minute, indicating that the data producer — not the Kafka or Flink layers — is the binding bottleneck at this configuration.}
+    \label{fig:grafana-10000}
+\end{figure}
+
+\section{End-to-End Latency}
+
+The latency results in Table~\ref{tab:throughput-results} reveal a clear pattern across the tested range. At 1x replay speed (414 records per minute), p95 latency is 37.1 seconds — substantially higher than at any other tested rate. This is explained by the watermark mechanism in the Flink job. The pipeline uses a 5-second event-time watermark to tolerate late arrivals. At 1x speed, each of the 414 sensors emits approximately one reading per minute; the resulting stream is sparse enough that individual partitions frequently go quiet between events, causing the watermark to stall until the next reading arrives from a lagging sensor. A stalled watermark delays window closure, which in turn delays the aggregate write to TimescaleDB. This effect disappears as the replay rate increases and the stream becomes dense enough to advance the watermark continuously.
+
+From 5x onwards, latency stabilises at approximately 5 to 9 seconds and remains within that band through the entire range up to and including 1000x. This floor corresponds closely to the configured 5-second watermark delay plus the time required for Flink to perform the aggregation, serialise the result, and write it to TimescaleDB. All values in this range are well within the sub-minute threshold stated in Section~\ref{sec:objectives}.
+
+At 10,000× the configured rate of 4.14 million records per minute could not be reached: the producer itself became the bottleneck, as the rate at which it can read and re-emit records from the S3 Parquet archive is bounded by object storage throughput and local I/O. The effective ingestion rate at this setting was approximately 1.79 million records per minute. Despite this, p95 latency rose to 13 seconds and p99 to 13.65 seconds — indicating the onset of resource contention among the co-located services — but latency remained well within the one-minute requirement.
+
+\section{Alert Detection}
+
+Alert correctness was verified by replaying a sequence of readings with PM2.5 concentrations set to two standard deviations above the sensor baseline, sustained for more than ten consecutive 60-second windows. The Flink anomaly detection operator correctly identified the onset condition and dispatched an alert email after the tenth consecutive elevated window. Upon return to baseline readings, a recovery notification was issued after the corresponding ten-window recovery period. The individual onset and recovery email templates are shown in Figure~\ref{fig:alert-emails}; Figure~\ref{fig:multiple-alerts-mailhog} shows the MailHog inbox after a full evaluation run, confirming that multiple sensors triggered and resolved alerts independently without interference.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\textwidth]{Figures/evaluation/multiple_alerts_mailhog.png}
+    \caption{MailHog inbox after a full evaluation run, showing onset and recovery notifications dispatched independently for multiple sensors.}
+    \label{fig:multiple-alerts-mailhog}
+\end{figure}
+
+\section{Discussion}
+
+The results demonstrate that the implemented pipeline meets both primary objectives under the experimental conditions described. End-to-end latency remained below one minute across all nine tested configurations, including the 10,000× run where resource contention raised p95 to 13 seconds; and alert detection operated correctly, suppressing spurious notifications through the ten-window onset and recovery requirements.
+
+Several limitations of the evaluation should be noted. First, the data source is a replay of historical sensor readings rather than live hardware sensors, meaning network jitter and sensor failure scenarios are not represented. Second, all services were co-located on a single host, which eliminates network latency between components present in a distributed cloud deployment; the elevated latency at 10,000x reflects single-host saturation rather than a fundamental limit of the architecture. At production scale — with ingestion distributed across Amazon MSK, processing on Amazon Managed Service for Apache Flink, and storage on Amazon RDS — latency characteristics would differ, though the architectural design preserves the same processing guarantees. Fault tolerance under node failure and cold-start recovery time were not measured and remain directions for future evaluation.
