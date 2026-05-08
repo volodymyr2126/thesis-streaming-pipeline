@@ -10,7 +10,7 @@ echo "==> Bringing down the full stack..."
 $COMPOSE down --remove-orphans 2>/dev/null || true
 
 echo "==> Starting only data services..."
-$COMPOSE up -d kafka timescaledb minio
+$COMPOSE up -d kafka timescaledb
 
 echo -n "    Waiting for Kafka"
 until $COMPOSE exec -T kafka kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1; do
@@ -24,11 +24,6 @@ until $COMPOSE exec -T timescaledb pg_isready -U pipeline -d airquality >/dev/nu
 done
 echo " ready"
 
-echo -n "    Waiting for MinIO"
-until $COMPOSE exec -T minio curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1; do
-  echo -n "."; sleep 2
-done
-echo " ready"
 
 echo "==> Clearing TimescaleDB tables..."
 $COMPOSE exec -T timescaledb psql -U pipeline -d airquality <<'SQL'

@@ -44,7 +44,6 @@ data "terraform_remote_state" "base" {
   }
 }
 
-# Fetch VPC details not exposed by base outputs
 data "aws_vpc" "main" {
   id = data.terraform_remote_state.base.outputs.vpc_id
 }
@@ -86,39 +85,6 @@ module "msk" {
   private_subnet_ids = local.private_subnet_ids
 }
 
-# ── ALB ───────────────────────────────────────────────────────────────────────
-
-module "alb" {
-  source = "../../modules/alb"
-
-  project_name      = var.project_name
-  environment       = var.environment
-  vpc_id            = local.vpc_id
-  public_subnet_ids = local.public_subnet_ids
-}
-
-# ── RDS (TimescaleDB on PostgreSQL 15) ────────────────────────────────────────
-
-module "rds" {
-  source = "../../modules/rds"
-
-  project_name       = var.project_name
-  environment        = var.environment
-  vpc_id             = local.vpc_id
-  vpc_cidr           = local.vpc_cidr
-  private_subnet_ids = local.private_subnet_ids
-}
-
-# ── SMTP credentials (read at plan time so ECS doesn't need Secrets Manager) ──
-
-data "aws_secretsmanager_secret_version" "smtp_user" {
-  secret_id = "thesis-pipeline/dev/ses-smtp-user"
-}
-
-data "aws_secretsmanager_secret_version" "smtp_password" {
-  secret_id = "thesis-pipeline/dev/ses-smtp-password"
-}
-
 # ── SES ───────────────────────────────────────────────────────────────────────
 
 module "ses" {
@@ -128,37 +94,4 @@ module "ses" {
   environment  = var.environment
   alert_email  = var.alert_email
   aws_region   = var.aws_region
-}
-
-# ── ECS (producer, alerting, grafana) ────────────────────────────────────────
-
-module "ecs" {
-  source = "../../modules/ecs"
-
-  project_name              = var.project_name
-  environment               = var.environment
-  aws_region                = var.aws_region
-  vpc_id                    = local.vpc_id
-  public_subnet_ids         = local.public_subnet_ids
-  alb_security_group_id     = module.alb.alb_security_group_id
-  producer_target_group_arn = module.alb.producer_target_group_arn
-  grafana_target_group_arn  = module.alb.grafana_target_group_arn
-  grafana_root_url          = "http://${module.alb.alb_dns_name}"
-
-  kafka_bootstrap       = module.msk.bootstrap_brokers
-  data_lake_bucket_name = local.data_lake_bucket
-  data_lake_bucket_arn  = local.data_lake_arn
-  alert_email           = var.alert_email
-  owm_api_key           = var.owm_api_key
-
-  smtp_host     = module.ses.smtp_host
-  smtp_user     = data.aws_secretsmanager_secret_version.smtp_user.secret_string
-  smtp_password = data.aws_secretsmanager_secret_version.smtp_password.secret_string
-  smtp_from     = "alerts@airquality.local"
-
-  rds_host                = module.rds.endpoint
-  rds_db                  = module.rds.db_name
-  rds_user                = module.rds.db_user
-  rds_password            = module.rds.db_password
-  rds_password_secret_arn = module.rds.password_secret_arn
 }

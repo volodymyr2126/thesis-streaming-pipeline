@@ -1,4 +1,4 @@
-"""Replay historical air quality readings from MinIO Parquet at configurable speed."""
+"""Replay historical air quality readings from S3 (or MinIO) Parquet at configurable speed."""
 import io
 import logging
 import os
@@ -15,7 +15,7 @@ from producers.src.data.models import SensorReading
 
 logger = logging.getLogger(__name__)
 
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://minio:9000")
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "")   # empty = use real AWS S3
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY",  "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY",  "minioadmin")
 MINIO_BUCKET     = os.getenv("MINIO_BUCKET",      "air-quality-minutely")
@@ -23,27 +23,26 @@ REPLAY_SPEED     = float(os.getenv("REPLAY_SPEED", "1000"))  # 1000× real time
 LOAD_WORKERS     = int(os.getenv("LOAD_WORKERS", "16"))
 
 
+def _make_s3_client():
+    if MINIO_ENDPOINT:
+        return boto3.client(
+            "s3",
+            endpoint_url=MINIO_ENDPOINT,
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY,
+            region_name="us-east-1",
+        )
+    return boto3.client("s3")
+
+
 def _fetch_key(key: str) -> list[dict]:
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name="us-east-1",
-    )
-    body = s3.get_object(Bucket=MINIO_BUCKET, Key=key)["Body"].read()
+    body = _make_s3_client().get_object(Bucket=MINIO_BUCKET, Key=key)["Body"].read()
     return pq.read_table(io.BytesIO(body)).to_pylist()
 
 
 def _list_keys_by_date() -> dict[str, list[str]]:
-    """Return {date_str: [key, ...]} sorted by date, collected from MinIO listing."""
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name="us-east-1",
-    )
+    """Return {date_str: [key, ...]} sorted by date, collected from S3/MinIO listing."""
+    s3 = _make_s3_client()
     try:
         paginator = s3.get_paginator("list_objects_v2")
         keys = [
@@ -53,7 +52,7 @@ def _list_keys_by_date() -> dict[str, list[str]]:
             if obj["Key"].endswith(".parquet")
         ]
     except Exception as e:
-        logger.error(f"Cannot connect to MinIO at {MINIO_ENDPOINT}: {e}")
+        logger.error(f"Cannot connect to S3 bucket {MINIO_BUCKET}: {e}")
         return {}
 
     if not keys:

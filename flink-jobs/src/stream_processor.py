@@ -27,13 +27,13 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-KAFKA_BOOTSTRAP   = "broker:29092"
+KAFKA_BOOTSTRAP   = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "broker:29092")
 SOURCE_TOPIC      = "air-quality-raw"
 AGG_TOPIC         = "air-quality-aggregated"
 ALERTS_TOPIC      = "air-quality-alerts"
-TIMESCALEDB_URL   = "jdbc:postgresql://timescaledb:5432/airquality"
-TIMESCALEDB_USER  = "pipeline"
-TIMESCALEDB_PASS  = "pipeline"
+TIMESCALEDB_URL   = os.getenv("TIMESCALEDB_URL", "jdbc:postgresql://timescaledb:5432/airquality")
+TIMESCALEDB_USER  = os.getenv("TIMESCALEDB_USER", "pipeline")
+TIMESCALEDB_PASS  = os.getenv("TIMESCALEDB_PASS", "pipeline")
 
 # ── alert thresholds ─────────────────────────────────────────────────────────
 # Used as fallback when no historical baselines are available for a sensor.
@@ -44,8 +44,8 @@ FALLBACK_PM25_THRESHOLD = 25.0  # ug/m3
 Z_SCORE_THRESHOLD = 2.0
 
 # Consecutive windows required to trigger / resolve an alert
-ONSET_WINDOWS    = 3   # 3 bad windows (~3 min) before firing
-RECOVERY_WINDOWS = 3   # 3 good windows (~3 min) before resolving
+ONSET_WINDOWS    = 10   # 3 bad windows (~3 min) before firing
+RECOVERY_WINDOWS = 10   # 3 good windows (~3 min) before resolving
 
 # ── history buffer: 72 windows × 60 s = ~72 min of context ──────────────────
 HISTORY_SIZE = 72
