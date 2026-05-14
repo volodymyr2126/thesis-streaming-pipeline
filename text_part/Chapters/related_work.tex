@@ -9,28 +9,9 @@ Svidzinska\cite{svidzinska2020citizen} demonstrated that citizen-deployed sensor
 Despite this body of work, the existing literature on Ukrainian air quality monitoring addresses individual components in isolation — sensor deployment, data collection, or predictive modelling — without integrating them into a pipeline architecture covering the full path from ingestion to alerting and visualization.
 
 \section{Streaming Pipeline Technologies}
-As documented by Carbone et al.\cite{carbone2020beyond}, the foundations of stream processing attracted the interest of database research communities as early as the 1990s. That decade witnessed the emergence of prototype systems such as TelegraphCQ and Stanford STREAM, which introduced foundational concepts including window aggregations, fault tolerance, and complex event processing\cite{carbone2020beyond}. Building on this research, the first commercial systems — including Esper and Oracle CQL — emerged in the 2000s. The 2010s marked a decisive shift toward widespread industrial adoption, with the introduction of Twitter Storm, Apache Spark Streaming, and Apache Flink, each targeting the growing demand for low-latency, large-scale data processing.
+Building such an integrated pipeline requires a foundation of mature streaming technologies, and the maturity of that foundation directly shapes what is feasible at the system level. As documented by Carbone et al.\cite{carbone2020beyond}, the foundations of stream processing attracted the interest of database research communities as early as the 1990s. That decade witnessed the emergence of prototype systems such as TelegraphCQ and Stanford STREAM, which introduced foundational concepts including window aggregations, fault tolerance, and complex event processing\cite{carbone2020beyond}. Building on this research, the first commercial systems — including Esper and Oracle CQL — emerged in the 2000s. The 2010s marked a decisive shift toward widespread industrial adoption, with the introduction of Twitter Storm, Apache Spark Streaming, and Apache Flink, each targeting the growing demand for low-latency, large-scale data processing.
 
 Stream data processing has since matured into one of the most widely adopted data processing paradigms. Modern use cases span IoT data aggregation, real-time fraud detection, and medical monitoring systems — all of which require minimal latency between data generation and actionable output. Kumar proposes a latency-based framework for architectural selection, noting that financial applications demand sub-50\,ms response times while behavioural analytics can tolerate latencies measured in minutes\cite{kumar2025evolution}. At the technology level, Apache Kafka and Apache Flink have emerged as the dominant combination for production streaming pipelines, with properly configured Kafka clusters sustaining throughput exceeding one million messages per second at sub-10\,ms latencies\cite{kumar2025evolution}.
-
-The three frameworks most relevant to this work are compared below. \textbf{Apache Spark Streaming} extends the Spark batch engine with a micro-batch execution model: the incoming stream is divided into small time-bounded batches, each processed as a discrete RDD computation. This yields high throughput but introduces an inherent latency floor equal to the batch interval, typically 500\,ms to several seconds. \textbf{Apache Storm} was one of the first frameworks to offer true record-at-a-time processing, delivering low per-record latency. However, it provides no native support for stateful windowed aggregations or exactly-once processing guarantees, requiring these to be implemented manually at the application level. \textbf{Apache Flink} combines a true event-at-a-time execution model with native support for event-time semantics, watermarking, managed state, and exactly-once guarantees via distributed snapshots. Empirical benchmarks by Joy \cite{joy2024scalable} confirm that Flink achieves lower latency and higher throughput than both alternatives while consuming fewer resources. Table~\ref{tab:stream-frameworks} summarises the key properties of each framework.
-
-\begin{table}[H]
-\centering
-\caption{Comparison of stream processing frameworks}
-\label{tab:stream-frameworks}
-\begin{tabular}{|l|l|l|l|}
-\hline
-\textbf{Property} & \textbf{Spark Streaming} & \textbf{Apache Storm} & \textbf{Apache Flink} \\
-\hline
-Execution model       & Micro-batch          & Record-at-a-time  & Event-at-a-time   \\\hline
-Latency               & Seconds              & Low               & Very low          \\\hline
-Managed state         & No                   & No                & Yes               \\\hline
-Exactly-once          & Yes (micro-batch)    & No                & Yes               \\\hline
-Native windowing      & Limited              & No                & Yes               \\\hline
-Active development    & Yes                  & Minimal           & Yes               \\\hline
-\end{tabular}
-\end{table}
 
 \section{Streaming Data Processing Pipelines in Practice}
 
@@ -42,6 +23,6 @@ Kumar et al.\cite{kumar2024cep} propose a rule-based Complex Event Processing fr
 
 Existing research on air quality in Ukraine has produced valuable contributions across sensor deployment, atmospheric modelling, and conflict-driven pollution analysis\cite{shelestov2020essential, svidzinska2020citizen, MALYTSKA2026108959}. However, these efforts address individual components in isolation and do not extend to integrated pipeline architectures capable of continuous ingestion, processing, and real-time notification.
 
-The stream processing landscape has matured significantly, evolving from academic prototypes in the 1990s to production-grade frameworks such as Apache Flink and Apache Kafka that now underpin real-time systems across industries\cite{carbone2020beyond, kumar2025evolution}. Practical pipeline implementations have been documented across domains — from healthcare\cite{kamal2024realtime} and general environmental monitoring\cite{akanbi2020distributed} to air quality systems using CEP-based alerting\cite{kumar2024cep} and cloud-native ETL architectures\cite{sserunjogi2025airqo} — demonstrating that end-to-end streaming pipelines for sensor-driven domains are both feasible and publishable.
+In parallel, the stream processing landscape has matured from academic prototypes into production-grade infrastructure, and end-to-end pipelines built on that infrastructure are now routinely deployed in adjacent sensor-driven domains — from clinical monitoring and general environmental analytics to air quality systems abroad — demonstrating that the technical building blocks for the present work are no longer in question.
 
 Taken together, these threads identify a clear gap: the availability of mature streaming technology and demonstrated domain need in Ukraine has not yet been bridged by a published pipeline architecture oriented toward sub-minute air quality notification. This work addresses that gap.

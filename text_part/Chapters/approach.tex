@@ -21,7 +21,7 @@ Data producer publishes readings at a fixed interval to a message broker, which 
 
 \section{Technology Selection}
 
-The selection of technologies for a data pipeline is non-trivial, as numerous tools exist for each architectural role with substantially overlapping feature sets. We evaluated the candidates at each layer  against the following criteria: low end-to-end latency, support for local deployment and reproducible development environments, open-source availability with active community support, quality of documentation, and compatibility with managed cloud service equivalents to facilitate future migration.
+The selection of technologies for a data pipeline is non-trivial, as numerous tools exist for each architectural role with substantially overlapping feature sets. We evaluated the candidates at each layer  against the following criteria: low end-to-end latency, support for local deployment and reproducible development environments, open-source availability with active community support, quality of documentation, and compatibility with managed cloud service equivalents to facilitate possible migration.
 Each subsection below presents the candidate technologies considered for that layer, evaluates them against these criteria, and states the selection made.
 
 \subsection{Message Queue}
@@ -46,7 +46,7 @@ Consumption model      & Push-based queue   & Log + queue       & Distributed lo
 Message retention      & Until acknowledged & Configurable      & Configurable    \\\hline
 Multi-consumer replay  & No                 & Yes               & Yes             \\\hline
 Local deployment       & Simple             & Complex           & Simple          \\\hline
-Cloud equivalent       & —                  & —                 & Amazon MSK      \\\hline
+Cloud equivalent       & Amazon MQ          & —                 & Amazon MSK      \\\hline
 \end{tabular}
 \end{table}
 
@@ -63,7 +63,7 @@ For processing the data we initially designed a microservice that polled batches
 
 Apache Spark Streaming operates on a micro-batch execution model: rather than processing records individually as they arrive, it accumulates incoming data into small batches and processes each batch as a discrete unit. This introduces an inherent minimum latency equal to the batch interval, which is incompatible with the sub-minute end-to-end latency requirement of this work.
 
-Apache Flink is a distributed stream processing engine built on a true event-at-a-time execution model. It provides native support for event-time semantics, watermarking, stateful operators, and windowed aggregations — all of which are required by this pipeline for correct processing of out-of-order sensor readings. As established in Table~\ref{tab:stream-frameworks}, Flink is the only candidate among those reviewed that offers native windowing, managed state, and exactly-once guarantees simultaneously. Empirical benchmarks by Joy \cite{joy2024scalable} further confirm that Flink achieves lower latency and higher throughput than Spark Streaming. Flink is open-source, well-documented, and has a managed cloud equivalent in Amazon Managed Service for Apache Flink. For these reasons, Apache Flink was selected as the stream processing engine for this pipeline.
+Apache Flink is a distributed stream processing engine built on a true event-at-a-time execution model. It provides native support for event-time semantics, watermarking, stateful operators, and windowed aggregations — all of which are required by this pipeline for correct processing of out-of-order sensor readings. Empirical benchmarks by Joy \cite{joy2024scalable} further confirm that Flink achieves lower latency and higher throughput than Spark Streaming. Flink is open-source, well-documented, and has a managed cloud equivalent in Amazon Managed Service for Apache Flink. For these reasons, Apache Flink was selected as the stream processing engine for this pipeline.
 
 \subsection{Data Storage}
 
@@ -164,11 +164,22 @@ Output schema   & \texttt{SensorReading}        & \texttt{SensorReading}        
 
 \subsection{Stream Processing Logic}
 
-We implemented a Flink job that performs two concurrent tasks on the incoming stream. The first is a windowed aggregation: readings are grouped by sensor identifier into 60-second tumbling windows with a 5-second watermark for late arrivals, producing per-window averages and maxima for PM2.5, PM10, NO\textsubscript{2}, O\textsubscript{3}, SO\textsubscript{2}, and AQI. These aggregates are written to TimescaleDB and published to a Kafka topic for downstream consumers.
+The stream processor is implemented as a single PyFlink job that subscribes to the \texttt{air-quality-raw} Kafka topic as its sole input and fans out to four sinks: two Kafka topics for downstream consumers (\texttt{air-quality-aggregated} and \texttt{air-quality-alerts}) and two TimescaleDB tables for persistence (\texttt{sensor\_aggregates} and \texttt{air\_quality\_alerts}). All sources and sinks are declared as Flink Table API tables with JSON or JDBC connectors, and a single \texttt{StatementSet} submits the four inserts together so that they share the same execution graph and checkpoint barriers.
 
-The second task is alert detection, which operates on the aggregated stream and maintains per-sensor state across consecutive windows. Anomaly detection uses a Z-score approach: each window's PM2.5 and AQI values are compared against a rolling baseline of the previous 72 windows, and a window is flagged as elevated if either metric exceeds two standard deviations above the mean. Per-sensor baseline statistics are pre-computed from historical data and loaded from a JSON file at job startup, avoiding a cold-start period during which no baselines would be available. When no baseline exists for a sensor, fixed fallback thresholds are applied instead. To suppress alert flapping, an onset event is emitted only after 10 consecutive elevated windows, and a recovery event only after 10 consecutive normal ones. The resulting state machine is illustrated in Figure~\ref{fig:alert-state-machine}.
+The source table parses each Kafka record's JSON payload into the \texttt{SensorReading} schema, derives an \texttt{event\_time} column from the record's UTC timestamp, and declares a watermark of \texttt{event\_time - INTERVAL '5' SECOND}. A 5-second idle-source timeout is set so that watermarks continue to advance when a partition is briefly silent, which would otherwise stall the windowed aggregation. The overall data flow through the job is shown in Figure~\ref{fig:flink-job-flow}.
 
-The Flink job is configured with exactly-once processing semantics and a 10-second checkpoint interval. Checkpoints are written to a persistent volume, allowing the job to resume from the last consistent state after a restart without reprocessing or losing in-flight window aggregates.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{Figures/Approach/streaming_processing_logic.png}
+    \caption{Stream processing job: a single Kafka source feeds a 60-second tumbling window aggregation that fans out to a Kafka topic and TimescaleDB; the aggregated stream is then keyed by sensor and processed by an alert state machine that emits onset/recovery events to a second pair of sinks.}
+    \label{fig:flink-job-flow}
+\end{figure}
+
+On top of this source the job performs two concurrent tasks. The first is a windowed aggregation expressed in SQL through the Table API: readings are grouped by sensor identifier into 60-second tumbling windows over \texttt{event\_time}, producing per-window averages and maxima for PM2.5, PM10, NO\textsubscript{2}, O\textsubscript{3}, SO\textsubscript{2}, and AQI together with a reading count. The resulting table is inserted into both the aggregated Kafka sink and the TimescaleDB JDBC sink in parallel.
+
+The second task is alert detection, which operates on the aggregated stream and maintains per-sensor state across consecutive windows. Because Flink SQL does not expose the kind of cross-window stateful reasoning required here, the aggregated table is converted to a \texttt{DataStream}, keyed by sensor identifier, and processed by a \texttt{KeyedProcessFunction} that holds two pieces of managed state per key: a \texttt{ValueState} carrying the current alert status and counters for consecutive elevated, pending, and recovery windows, and a \texttt{ListState} acting as a rolling 72-window history buffer used for trend and peak computation. Anomaly detection uses a Z-score approach: each window's PM2.5 and AQI values are compared against a rolling baseline of the previous 72 windows, and a window is flagged as elevated if either metric exceeds two standard deviations above the mean. Per-sensor baseline statistics are pre-computed from historical data and loaded from a JSON file at job startup, avoiding a cold-start period during which no baselines would be available. When no baseline exists for a sensor, fixed fallback thresholds are applied instead; these are not defined by us but taken from the European Air Quality Index band boundaries published by the European Environment Agency\cite{eea_aqi}. To suppress alert flapping, an onset event is emitted only after 10 consecutive elevated windows, and a recovery event only after 10 consecutive normal ones. Emitted alerts are converted back into a Table API row, then written to the alerts Kafka topic and to the \texttt{air\_quality\_alerts} table in TimescaleDB through the same \texttt{StatementSet}. The resulting state machine is illustrated in Figure~\ref{fig:alert-state-machine}.
+
+The Flink job is configured with exactly-once processing semantics and a 10-second checkpoint interval. Checkpoints are written to a persistent volume, allowing the job to resume from the last consistent state after a restart without reprocessing or losing in-flight window aggregates. Parallelism is set to one for the experiments reported in Chapter~\ref{ch:evaluation}; the design does not depend on this choice, as Kafka partitioning of the source topic and the per-sensor key in the alert function would allow parallelism to be increased without changes to the logic.
 
 \begin{figure}[H]
     \centering
@@ -187,14 +198,14 @@ The stream processor writes its output to two destinations in parallel. Aggregat
 
 A single Grafana dashboard was developed to serve two purposes simultaneously: real-time visibility into air quality conditions across monitored stations, and operational monitoring of the pipeline itself. The dashboard is defined entirely as a provisioned JSON configuration file, loaded automatically on startup without any manual setup.
 
-The top of the dashboard displays a map of Ukraine with all active monitoring stations marked by location. Below it, four panels show the cleanest and most polluted cities ranked by PM2.5 and AQI respectively, giving an immediate overview of current conditions across the country. Further down, two panels track the alert state — active onset and recovery events by city and sensor. The bottom row contains two system health panels: one showing the number of readings processed per window, and one showing the average end-to-end latency computed as \texttt{inserted\_at} $-$ \texttt{window\_end} for each row in \texttt{sensor\_aggregates}. This latency panel is the primary instrument for verifying the sub-minute processing guarantee that is the central claim of this work. The dashboard refreshes every 30 seconds. The main dashboard view is shown in Figure~\ref{fig:grafana-dashboard}; the pipeline health panels are shown in Figure~\ref{fig:latency-throughput}.
-
 \begin{figure}[H]
     \centering
     \includegraphics[width=1\textwidth]{Figures/grafana_example.png}
     \caption{Grafana dashboard showing the Ukraine sensor map and top polluted and cleanest cities by PM2.5.}
     \label{fig:grafana-dashboard}
 \end{figure}
+
+The top of the dashboard displays a map of Ukraine with all active monitoring stations marked by location. Below it, four panels show the cleanest and most polluted cities ranked by PM2.5 and AQI respectively, giving an immediate overview of current conditions across the country. Further down, two panels track the alert state — active onset and recovery events by city and sensor. The bottom row contains two system health panels: one showing the number of readings processed per window, and one showing the average end-to-end latency computed as \texttt{inserted\_at} $-$ \texttt{window\_end} for each row in \texttt{sensor\_aggregates}. This latency panel is the primary instrument for verifying the sub-minute processing guarantee that is the central claim of this work. The dashboard refreshes every 30 seconds. The main dashboard view is shown in Figure~\ref{fig:grafana-dashboard}; the pipeline health panels are shown in Figure~\ref{fig:latency-throughput}.
 
 \begin{figure}[H]
     \centering

@@ -1,10 +1,11 @@
 \chapter{Evaluation}
+\label{ch:evaluation}
 
 This chapter evaluates the implemented pipeline against the two primary claims stated in the research objectives: the ability to sustain high-throughput ingestion across all monitored cities, and the delivery of end-to-end latency below one minute from sensor reading generation to stored aggregate.
 
 \section{Experimental Setup}
 
-All experiments were conducted on a single host machine (Apple M-series, 16 GB RAM) running all pipeline services via Docker Compose. No external infrastructure was used. The data source was a historical Parquet file replayed at configurable speed by the FastAPI producer, simulating continuous readings from 414 Ukrainian cities. The speed multiplier was increased stepwise across nine test runs, with each run sustained until Kafka consumer lag and Flink checkpoint duration stabilised, confirming the pipeline was keeping pace with incoming data.
+All experiments were conducted on a single host machine (Apple M-series, 16 GB RAM) running all pipeline services via Docker Compose. The only external dependency was Amazon S3, used as durable storage for the historical Parquet archive that the producer replays from; all processing, storage, and visualisation components ran locally. The data source was a historical Parquet file replayed at configurable speed by the FastAPI producer, simulating continuous readings from 414 Ukrainian cities. The speed multiplier was increased stepwise across nine test runs, with each run sustained until Kafka consumer lag and Flink checkpoint duration stabilised, confirming the pipeline was keeping pace with incoming data.
 
 End-to-end latency was instrumented via the \texttt{inserted\_at} timestamp column written to the \texttt{sensor\_aggregates} hypertable in TimescaleDB at the moment each aggregate record is persisted. Latency is defined as $\texttt{inserted\_at} - \texttt{window\_end}$: the elapsed time between the close of a 60-second tumbling window and the moment the resulting aggregate becomes queryable. This metric captures processing time through Flink, serialisation, and database write, and directly reflects the delay between a pollution event occurring and its data being available for alerting and visualisation. The producer overwrites historical timestamps with the current wall-clock time on emit, so the measurement reflects real elapsed time rather than compressed replay time.
 
