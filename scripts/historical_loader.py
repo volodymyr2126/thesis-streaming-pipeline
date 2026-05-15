@@ -1,33 +1,3 @@
-"""
-historical_loader.py
-
-One-time batch script. Run before starting the pipeline.
-
-  1. GeoNames         → downloads Ukraine populated-place dump, filters
-                        cities/towns with population ≥ MIN_POPULATION,
-                        giving ~300 points distributed across all oblasts
-  2. OWM Historical   → fetches DAYS_HISTORY days of hourly pollution data
-                        for each city coordinate
-  3. Baselines        → computes per-station mean/std for each pollutant
-                        and writes flink-jobs/src/baselines/baselines.json
-                        (Flink reads this at job startup for Z-score alerting)
-  4. MinIO            → stores raw readings as Parquet, partitioned by
-                        sensor_id / date
-
-Usage:
-    pip install -r scripts/requirements.txt
-    OWM_API_KEY=<key> python scripts/historical_loader.py
-
-Optional env vars:
-    MIN_POPULATION    (default 10000)
-    DAYS_HISTORY      (default 30)
-    MINIO_ENDPOINT    (default http://localhost:9000)
-    MINIO_ACCESS_KEY  (default minioadmin)
-    MINIO_SECRET_KEY  (default minioadmin)
-    MINIO_BUCKET      (default air-quality-historical)
-    BASELINES_OUT     (default flink-jobs/src/baselines/baselines.json)
-"""
-
 import io
 import json
 import math
@@ -52,7 +22,6 @@ OWM_URL        = "https://api.openweathermap.org/data/2.5/air_pollution/history"
 DAYS_HISTORY   = int(os.getenv("DAYS_HISTORY", "30"))
 MIN_POPULATION = int(os.getenv("MIN_POPULATION", "10000"))
 
-# GeoNames Ukraine admin1 code → oblast name
 _ADMIN1_TO_REGION = {
     "01": "Cherkasy Oblast",
     "02": "Chernihiv Oblast",
@@ -94,7 +63,6 @@ BASELINES_OUT = Path(os.getenv(
 
 POLLUTANTS = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
 
-# ── GeoNames station discovery ────────────────────────────────────────────────
 
 def fetch_geonames_stations() -> list[dict]:
     """Download the GeoNames Ukraine dump and return all populated places
@@ -121,10 +89,8 @@ def fetch_geonames_stations() -> list[dict]:
                 feature_class = cols[6]
                 feature_code  = cols[7]
                 country_code  = cols[8]
-                # P = populated place; keep cities, towns, villages, etc.
                 if feature_class != "P" or country_code != "UA":
                     continue
-                # skip administrative seats that are just duplicates of the city
                 if feature_code in ("PPLX",):
                     continue
                 try:
@@ -157,7 +123,6 @@ def fetch_geonames_stations() -> list[dict]:
     return stations
 
 
-# ── OWM historical fetch ──────────────────────────────────────────────────────
 
 def fetch_history(lat: float, lon: float) -> list[dict]:
     end   = int(datetime.now(timezone.utc).timestamp())
@@ -174,7 +139,6 @@ def fetch_history(lat: float, lon: float) -> list[dict]:
     return resp.json().get("list", [])
 
 
-# ── baseline computation ──────────────────────────────────────────────────────
 
 def _stats(values: list[float]) -> dict:
     clean = [v for v in values if v is not None and not math.isnan(v)]
@@ -204,7 +168,6 @@ def compute_baselines(readings: list[dict]) -> dict:
     return result
 
 
-# ── Parquet helpers ───────────────────────────────────────────────────────────
 
 _PARQUET_SCHEMA = pa.schema([
     pa.field("sensor_id",    pa.string()),
@@ -276,7 +239,6 @@ def bucket_has_data(s3) -> bool:
     return resp.get("KeyCount", 0) > 0
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     s3 = boto3.client(
@@ -323,18 +285,16 @@ def main():
         for date, rows in by_date.items():
             upload_parquet(s3, rows, sid, date)
 
-        time.sleep(0.2)  # respect OWM rate limits
+        time.sleep(0.2)
 
     BASELINES_OUT.parent.mkdir(parents=True, exist_ok=True)
     BASELINES_OUT.write_text(json.dumps(all_baselines, indent=2))
     print(f"\nBaselines written → {BASELINES_OUT}  ({len(all_baselines)} stations)")
 
-    # Save station metadata to MinIO so the producer's real-time mode can load
-    # lat/lon/city/region without scanning all Parquet partitions.
     station_meta = [
         {k: v for k, v in s.items()}
         for s in stations
-        if s["sensor_id"] in all_baselines  # only stations that returned data
+        if s["sensor_id"] in all_baselines
     ]
     s3.put_object(
         Bucket=MINIO_BUCKET,

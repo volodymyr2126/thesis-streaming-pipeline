@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Reset all pipeline state for a clean run.
-# Safe to run whether the stack is up or down.
-# After completion the stack is fully stopped — run `docker compose up -d` to start fresh.
+
 set -euo pipefail
 
 COMPOSE="docker compose"
@@ -51,10 +49,6 @@ for topic in $TOPICS; do
     --entity-type topics --entity-name "$topic" \
     --alter --delete-config retention.ms 2>/dev/null || true
 done
-
-echo "==> Clearing MinIO historical data..."
-#$COMPOSE exec -T minio mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true
-#$COMPOSE exec -T minio mc rm --recursive --force local/air-quality-historical 2>/dev/null || true
 
 echo "==> Clearing baselines from shared volume..."
 $COMPOSE run --rm --no-deps \

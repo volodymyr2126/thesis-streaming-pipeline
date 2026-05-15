@@ -33,8 +33,6 @@ provider "aws" {
   }
 }
 
-# ── Re-use shared network and storage from the base environment ───────────────
-
 data "terraform_remote_state" "base" {
   backend = "s3"
   config = {
@@ -64,28 +62,8 @@ data "aws_s3_bucket" "data_lake" {
 }
 
 locals {
-  vpc_id             = data.terraform_remote_state.base.outputs.vpc_id
-  vpc_cidr           = data.aws_vpc.main.cidr_block
-  public_subnet_ids  = data.terraform_remote_state.base.outputs.public_subnet_ids
-  private_subnet_ids = data.terraform_remote_state.base.outputs.private_subnet_ids
-  vpc_internal_sg_id = data.aws_security_groups.vpc_internal.ids[0]
-  data_lake_bucket   = data.terraform_remote_state.base.outputs.data_lake_bucket_name
-  data_lake_arn      = data.aws_s3_bucket.data_lake.arn
+  data_lake_bucket = data.terraform_remote_state.base.outputs.data_lake_bucket_name
 }
-
-# ── MSK (Kafka) ───────────────────────────────────────────────────────────────
-
-module "msk" {
-  source = "../../modules/msk"
-
-  project_name       = var.project_name
-  environment        = var.environment
-  vpc_id             = local.vpc_id
-  vpc_cidr           = local.vpc_cidr
-  private_subnet_ids = local.private_subnet_ids
-}
-
-# ── SES ───────────────────────────────────────────────────────────────────────
 
 module "ses" {
   source = "../../modules/ses"

@@ -1,4 +1,3 @@
-"""Kafka topic management."""
 import logging
 from confluent_kafka.admin import AdminClient, NewTopic
 from producers.src.utils.config import KAFKA_BOOTSTRAP_SERVERS, KAFKA_TOPIC

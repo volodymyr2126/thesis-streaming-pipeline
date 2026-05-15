@@ -4,7 +4,7 @@ import os
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "air-quality-raw")
 
-PRODUCER_MODE = os.getenv("PRODUCER_MODE", "replay")  # "replay" | "realtime"
+PRODUCER_MODE = os.getenv("PRODUCER_MODE", "replay")
 OWM_API_KEY   = os.getenv("OWM_API_KEY", "")
 
 PRODUCER_CONFIG = {

@@ -1,12 +1,3 @@
-"""
-Air Quality Flink Stream Processor
-
-  Kafka (air-quality-raw)
-    -> Table API: 60-sec tumbling window aggregation per sensor
-    -> DataStream: KeyedProcessFunction alert state machine (onset / recovery)
-    -> Kafka (air-quality-aggregated)  +  JDBC -> TimescaleDB sensor_aggregates
-    -> Kafka (air-quality-alerts)      +  psycopg2 -> TimescaleDB air_quality_alerts
-"""
 import json
 import math
 import os
@@ -35,22 +26,14 @@ TIMESCALEDB_URL   = os.getenv("TIMESCALEDB_URL", "jdbc:postgresql://timescaledb:
 TIMESCALEDB_USER  = os.getenv("TIMESCALEDB_USER", "pipeline")
 TIMESCALEDB_PASS  = os.getenv("TIMESCALEDB_PASS", "pipeline")
 
-# ── alert thresholds ─────────────────────────────────────────────────────────
-# Used as fallback when no historical baselines are available for a sensor.
-FALLBACK_AQI_THRESHOLD  = 4     # OWM Poor or worse
-FALLBACK_PM25_THRESHOLD = 25.0  # ug/m3
-
-# Alert when value exceeds mean + Z_SCORE_THRESHOLD * std (dynamic mode)
+FALLBACK_AQI_THRESHOLD = 4
+FALLBACK_PM25_THRESHOLD = 25.0
 Z_SCORE_THRESHOLD = 2.0
 
-# Consecutive windows required to trigger / resolve an alert
-ONSET_WINDOWS    = 10   # 3 bad windows (~3 min) before firing
-RECOVERY_WINDOWS = 10   # 3 good windows (~3 min) before resolving
-
-# ── history buffer: 72 windows × 60 s = ~72 min of context ──────────────────
+ONSET_WINDOWS = 10
+RECOVERY_WINDOWS = 10
 HISTORY_SIZE = 72
 
-# Checked in both the local src dir and the Docker volume mount path
 BASELINES_FILE = Path(os.getenv(
     "BASELINES_FILE",
     str(Path(__file__).parent / "baselines" / "baselines.json"),

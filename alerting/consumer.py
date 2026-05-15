@@ -1,4 +1,3 @@
-"""Consumes air-quality-alerts from Kafka and sends email notifications via SMTP."""
 import json
 import logging
 import os
@@ -31,9 +30,9 @@ ALERT_TO     = os.getenv("ALERT_EMAIL_TO","admin@airquality.local")
 _SEVERITY_LABEL = {
     "good":      "Good",
     "fair":      "Fair",
-    "moderate":  "Moderate ⚠",
-    "poor":      "Poor 🔴",
-    "very_poor": "Very Poor 🟣",
+    "moderate":  "Moderate",
+    "poor":      "Poor",
+    "very_poor": "Very Poor",
 }
 
 

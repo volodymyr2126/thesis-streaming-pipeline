@@ -1,4 +1,3 @@
-"""Kafka producer — sends SensorReadings to the raw topic."""
 import time
 import asyncio
 import logging

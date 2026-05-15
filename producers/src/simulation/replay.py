@@ -59,7 +59,6 @@ def _list_keys_by_date() -> dict[str, list[str]]:
         logger.warning("No Parquet files in MinIO — run scripts/historical_loader.py first")
         return {}
 
-    # key format: sensor_id=<id>/date=<YYYY-MM-DD>/readings.parquet
     by_date: dict[str, list[str]] = defaultdict(list)
     for key in keys:
         parts = key.split("/")

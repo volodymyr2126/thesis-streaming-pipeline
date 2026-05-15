@@ -1,9 +1,3 @@
-"""Real-time OWM air pollution fetcher.
-
-Polls the OWM current air pollution API for all stations once per hour.
-Rate: 1 req/s (≤60/min, within free tier). Full sweep of ~414 stations
-takes ~7 minutes; the generator then sleeps until the next UTC hour boundary.
-"""
 import asyncio
 import json
 import logging
@@ -107,7 +101,7 @@ async def realtime_stream():
                 except Exception as e:
                     logger.warning(f"Failed to fetch {station['sensor_id']}: {e}")
 
-                await asyncio.sleep(1.0)  # ≤60 req/min (OWM free tier limit)
+                await asyncio.sleep(1.0)
 
             cycle_secs = (datetime.now(timezone.utc) - cycle_start).total_seconds()
             logger.info(f"Cycle complete: {success}/{len(stations)} stations in {cycle_secs:.0f}s")

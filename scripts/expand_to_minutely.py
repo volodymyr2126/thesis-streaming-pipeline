@@ -1,26 +1,3 @@
-"""
-expand_to_minutely.py
-
-Reads hourly Parquet files from MinIO (air-quality-historical) and writes
-minute-level Parquet files to a new bucket (air-quality-minutely).
-
-Each hourly row is expanded to 60 minute-stamped rows. Pollutant values get
-small Gaussian jitter (±5 % std) so hourly aggregates remain statistically
-consistent with the originals. AQI is recomputed from the noisy values.
-
-Usage:
-    python scripts/expand_to_minutely.py
-
-Optional env vars:
-    MINIO_ENDPOINT     (default http://localhost:9000)
-    MINIO_ACCESS_KEY   (default minioadmin)
-    MINIO_SECRET_KEY   (default minioadmin)
-    SRC_BUCKET         (default air-quality-historical)
-    DST_BUCKET         (default air-quality-minutely)
-    JITTER_FRAC        (default 0.05  — std as fraction of the hourly value)
-    WORKERS            (default 8     — parallel upload threads)
-"""
-
 import io
 import math
 import os
@@ -34,7 +11,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 
-# ── config ────────────────────────────────────────────────────────────────────
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT",  "http://localhost:9000")
 MINIO_ACCESS   = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET   = os.getenv("MINIO_SECRET_KEY", "minioadmin")
@@ -67,7 +43,6 @@ _SCHEMA = pa.schema([
 ])
 
 
-# ── AQI (European 1-5) ────────────────────────────────────────────────────────
 
 def _sub_index(value: float, breakpoints: list) -> int:
     for level, threshold in enumerate(breakpoints, start=1):
@@ -86,7 +61,6 @@ def compute_aqi(pm2_5: float, pm10: float, no2: float, o3: float, so2: float) ->
     )
 
 
-# ── expansion logic ───────────────────────────────────────────────────────────
 
 def _jitter(value: float) -> float:
     if value == 0.0:
@@ -98,7 +72,6 @@ def _jitter(value: float) -> float:
 def expand_row(row: dict) -> list[dict]:
     """Return 60 minute-level dicts from one hourly row."""
     base_ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
-    # Snap to the top of the hour in case source has sub-hour offsets
     base_ts = base_ts.replace(minute=0, second=0, microsecond=0)
 
     minutes = []
@@ -136,7 +109,6 @@ def expand_row(row: dict) -> list[dict]:
     return minutes
 
 
-# ── S3 helpers ────────────────────────────────────────────────────────────────
 
 def make_client():
     return boto3.client(
@@ -174,14 +146,13 @@ def list_source_keys(s3) -> list[str]:
     return keys
 
 
-# ── per-file worker ───────────────────────────────────────────────────────────
 
 def process_key(key: str) -> tuple[str, int]:
     """Read one source Parquet, expand, upload to dst bucket. Returns (key, rows_written)."""
     s3 = make_client()
 
     if key_exists(s3, DST_BUCKET, key):
-        return (key, 0)  # already done
+        return (key, 0)
 
     body = s3.get_object(Bucket=SRC_BUCKET, Key=key)["Body"].read()
     src_rows = pq.read_table(io.BytesIO(body)).to_pylist()
@@ -201,7 +172,6 @@ def process_key(key: str) -> tuple[str, int]:
     return (key, len(expanded))
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     s3 = make_client()

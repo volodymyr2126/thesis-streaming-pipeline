@@ -1,30 +1,3 @@
-"""
-cloud/scripts/sync_minio_to_s3.py
-
-If you already have data in local MinIO, this script copies it to AWS S3
-instead of re-fetching everything from OWM.
-
-Copies both:
-  minio://air-quality-historical/  →  s3://<BUCKET>/  (hourly Parquet)
-  minio://air-quality-minutely/    →  s3://<BUCKET>/  (minute Parquet, if it exists)
-
-After syncing, run cloud/scripts/expand_to_minutely.py if the minutely
-bucket was empty and you only synced the historical data.
-
-Usage:
-    export BUCKET=$(terraform -chdir=cloud/infrastructure/environments/dev output -raw data_lake_bucket_name)
-    python cloud/scripts/sync_minio_to_s3.py
-
-Optional env vars:
-    MINIO_ENDPOINT   (default http://localhost:9000)
-    MINIO_ACCESS_KEY (default minioadmin)
-    MINIO_SECRET_KEY (default minioadmin)
-    SRC_BUCKET       MinIO bucket to copy from (default air-quality-minutely)
-    BUCKET           AWS S3 destination bucket (required)
-    AWS_DEFAULT_REGION (default eu-central-1)
-    WORKERS          (default 16)
-"""
-
 import io
 import os
 import sys
@@ -86,7 +59,6 @@ def main():
 
     print(f"Found {len(keys):,} objects to copy\n")
 
-    # Check which keys already exist in S3
     existing = set(list_keys(dst, DST_BUCKET))
     to_copy  = [k for k in keys if k not in existing]
     print(f"Skipping {len(keys) - len(to_copy)} already-synced objects")
