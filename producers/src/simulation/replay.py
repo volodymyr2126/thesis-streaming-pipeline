@@ -1,47 +1,67 @@
-"""Replay historical air quality readings from S3 (or MinIO) Parquet at configurable speed."""
+import asyncio
 import io
 import logging
-import os
 import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import boto3
 import pyarrow.parquet as pq
 
 from producers.src.data.models import SensorReading
+from producers.src.utils.config import (
+    LOAD_WORKERS,
+    MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_REGION,
+    MINIO_SECRET_KEY,
+    REPLAY_SPEED,
+    SLEEP_PRECISION_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "")   # empty = use real AWS S3
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY",  "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY",  "minioadmin")
-MINIO_BUCKET     = os.getenv("MINIO_BUCKET",      "air-quality-minutely")
-REPLAY_SPEED     = float(os.getenv("REPLAY_SPEED", "1000"))  # 1000× real time
-LOAD_WORKERS     = int(os.getenv("LOAD_WORKERS", "16"))
-
 
 def _make_s3_client():
+    """Build a boto3 S3 client for MinIO if configured, else real AWS S3.
+
+    Returns:
+        A configured boto3 S3 client instance.
+    """
     if MINIO_ENDPOINT:
         return boto3.client(
             "s3",
             endpoint_url=MINIO_ENDPOINT,
             aws_access_key_id=MINIO_ACCESS_KEY,
             aws_secret_access_key=MINIO_SECRET_KEY,
-            region_name="us-east-1",
+            region_name=MINIO_REGION,
         )
     return boto3.client("s3")
 
 
 def _fetch_key(key: str) -> list[dict]:
+    """Download one Parquet object and return its rows as Python dicts.
+
+    Args:
+        key: Object key inside :data:`MINIO_BUCKET`.
+
+    Returns:
+        A list of row dicts read from the Parquet payload.
+    """
     body = _make_s3_client().get_object(Bucket=MINIO_BUCKET, Key=key)["Body"].read()
     return pq.read_table(io.BytesIO(body)).to_pylist()
 
 
 def _list_keys_by_date() -> dict[str, list[str]]:
-    """Return {date_str: [key, ...]} sorted by date, collected from S3/MinIO listing."""
+    """Group every Parquet object in the bucket by its ``date=`` partition.
+
+    Returns:
+        A mapping ``{date_str: [key, ...]}`` sorted by date, or an empty dict
+        if the bucket cannot be read or contains no Parquet files.
+    """
     s3 = _make_s3_client()
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -56,7 +76,9 @@ def _list_keys_by_date() -> dict[str, list[str]]:
         return {}
 
     if not keys:
-        logger.warning("No Parquet files in MinIO — run scripts/historical_loader.py first")
+        logger.warning(
+            "No Parquet files in MinIO — run scripts/historical_loader.py first"
+        )
         return {}
 
     by_date: dict[str, list[str]] = defaultdict(list)
@@ -69,7 +91,14 @@ def _list_keys_by_date() -> dict[str, list[str]]:
 
 
 def _load_day(date_keys: list[str]) -> list[dict]:
-    """Parallel-fetch all sensor files for one day, return rows sorted by timestamp."""
+    """Fetch every Parquet file for one date in parallel.
+
+    Args:
+        date_keys: Object keys belonging to a single date partition.
+
+    Returns:
+        All rows across the keys, sorted by ``timestamp``.
+    """
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=LOAD_WORKERS) as pool:
         for chunk in as_completed(pool.submit(_fetch_key, k) for k in date_keys):
@@ -79,11 +108,19 @@ def _load_day(date_keys: list[str]) -> list[dict]:
 
 
 def _to_reading(row: dict) -> SensorReading:
+    """Convert a Parquet row into a :class:`SensorReading`.
+
+    Args:
+        row: Row dict produced by :func:`_fetch_key`.
+
+    Returns:
+        A populated :class:`SensorReading` with current UTC timestamp.
+    """
     pm2_5 = float(row.get("pm2_5") or 0.0)
-    pm10  = float(row.get("pm10")  or 0.0)
-    no2   = float(row.get("no2")   or 0.0)
-    o3    = float(row.get("o3")    or 0.0)
-    so2   = float(row.get("so2")   or 0.0)
+    pm10 = float(row.get("pm10") or 0.0)
+    no2 = float(row.get("no2") or 0.0)
+    o3 = float(row.get("o3") or 0.0)
+    so2 = float(row.get("so2") or 0.0)
 
     return SensorReading(
         reading_id=str(uuid.uuid4()),
@@ -94,37 +131,38 @@ def _to_reading(row: dict) -> SensorReading:
         country=row.get("country", "UA"),
         latitude=float(row["latitude"]),
         longitude=float(row["longitude"]),
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        co=   round(float(row.get("co")  or 0.0), 2),
-        no=   round(float(row.get("no")  or 0.0), 2),
-        no2=  round(no2,  2),
-        o3=   round(o3,   2),
-        so2=  round(so2,  2),
+        timestamp=datetime.now(UTC).isoformat(),
+        co=round(float(row.get("co") or 0.0), 2),
+        no=round(float(row.get("no") or 0.0), 2),
+        no2=round(no2, 2),
+        o3=round(o3, 2),
+        so2=round(so2, 2),
         pm2_5=round(pm2_5, 2),
-        pm10= round(pm10,  2),
-        nh3=  round(float(row.get("nh3") or 0.0), 2),
+        pm10=round(pm10, 2),
+        nh3=round(float(row.get("nh3") or 0.0), 2),
         aqi=int(row.get("aqi") or 0),
         is_anomaly=False,
     )
 
 
 async def replay_stream():
-    """
-    Async generator that yields SensorReadings replayed from MinIO Parquet files
-    at REPLAY_SPEED × real time, looping indefinitely.
+    """Yield :class:`SensorReading` records replayed from historical Parquet.
 
-    Loads one day at a time (~414 sensors × 60 min ≈ 25k rows) to keep
-    memory usage flat regardless of how much historical data is in MinIO.
-    """
-    import asyncio
+    Streams readings at :data:`REPLAY_SPEED` times real time, one day at a
+    time, looping over the available date partitions indefinitely.
 
+    Yields:
+        :class:`SensorReading` instances pacing the original timestamps.
+    """
     keys_by_date = _list_keys_by_date()
     if not keys_by_date:
         return
 
     dates = sorted(keys_by_date.keys())
-    logger.info(f"Found {len(dates)} days ({dates[0]} → {dates[-1]}), "
-                f"starting replay at {REPLAY_SPEED}× real time")
+    logger.info(
+        f"Found {len(dates)} days ({dates[0]} → {dates[-1]}), "
+        f"starting replay at {REPLAY_SPEED}× real time"
+    )
 
     t0_hist: datetime | None = None
     wall_start: float | None = None
@@ -144,10 +182,10 @@ async def replay_stream():
                     wall_start = time.monotonic()
 
                 hist_elapsed = (t_hist - t0_hist).total_seconds()
-                target_wall  = wall_start + hist_elapsed / REPLAY_SPEED
+                target_wall = wall_start + hist_elapsed / REPLAY_SPEED
 
                 delay = target_wall - time.monotonic()
-                if delay > 0.001:
+                if delay > SLEEP_PRECISION_SECONDS:
                     await asyncio.sleep(delay)
 
                 yield _to_reading(row)

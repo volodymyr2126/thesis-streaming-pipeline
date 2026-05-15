@@ -1,34 +1,55 @@
-import io
-import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT",  "http://localhost:9000")
-MINIO_ACCESS   = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET   = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-SRC_BUCKET     = os.getenv("SRC_BUCKET",       "air-quality-minutely")
-DST_BUCKET     = os.environ["BUCKET"]
-AWS_REGION     = os.getenv("AWS_DEFAULT_REGION", "eu-central-1")
-WORKERS        = int(os.getenv("WORKERS", "16"))
+from config import (
+    AWS_REGION,
+    DST_BUCKET,
+    MINIO_ACCESS,
+    MINIO_ENDPOINT,
+    MINIO_REGION,
+    MINIO_SECRET,
+    PROGRESS_LOG_EVERY,
+    SRC_BUCKET,
+    WORKERS,
+)
 
 
 def make_minio():
+    """Build a boto3 S3 client pointed at the configured MinIO endpoint.
+
+    Returns:
+        A configured boto3 S3 client instance.
+    """
     return boto3.client(
         "s3",
         endpoint_url=MINIO_ENDPOINT,
         aws_access_key_id=MINIO_ACCESS,
         aws_secret_access_key=MINIO_SECRET,
-        region_name="us-east-1",
+        region_name=MINIO_REGION,
     )
 
 
 def make_aws():
+    """Build a boto3 S3 client for the configured AWS region.
+
+    Returns:
+        A configured boto3 S3 client instance.
+    """
     return boto3.client("s3", region_name=AWS_REGION)
 
 
 def list_keys(s3, bucket: str) -> list[str]:
+    """List all object keys in a bucket.
+
+    Args:
+        s3: A boto3 S3 client.
+        bucket: Name of the bucket to enumerate.
+
+    Returns:
+        A list with every object key in the bucket.
+    """
     paginator = s3.get_paginator("list_objects_v2")
     return [
         obj["Key"]
@@ -38,6 +59,14 @@ def list_keys(s3, bucket: str) -> list[str]:
 
 
 def copy_key(key: str) -> tuple[str, bool]:
+    """Copy a single object from MinIO to AWS S3.
+
+    Args:
+        key: Object key shared between source and destination buckets.
+
+    Returns:
+        A two-tuple ``(key, True)`` once the copy completes.
+    """
     src = make_minio()
     dst = make_aws()
     body = src.get_object(Bucket=SRC_BUCKET, Key=key)["Body"].read()
@@ -45,7 +74,12 @@ def copy_key(key: str) -> tuple[str, bool]:
     return (key, True)
 
 
-def main():
+def main() -> None:
+    """Sync every object from the MinIO source bucket to the AWS destination.
+
+    Returns:
+        None.
+    """
     src = make_minio()
     dst = make_aws()
 
@@ -60,7 +94,7 @@ def main():
     print(f"Found {len(keys):,} objects to copy\n")
 
     existing = set(list_keys(dst, DST_BUCKET))
-    to_copy  = [k for k in keys if k not in existing]
+    to_copy = [k for k in keys if k not in existing]
     print(f"Skipping {len(keys) - len(to_copy)} already-synced objects")
     print(f"Copying  {len(to_copy)} objects\n")
 
@@ -75,8 +109,11 @@ def main():
             key, ok = fut.result()
             if ok:
                 done += 1
-            if i % 200 == 0 or i == len(to_copy):
-                print(f"  [{i:>6}/{len(to_copy)}  {i/len(to_copy)*100:5.1f}%]  done={done}")
+            if i % PROGRESS_LOG_EVERY == 0 or i == len(to_copy):
+                print(
+                    f"  [{i:>6}/{len(to_copy)}  {i / len(to_copy) * 100:5.1f}%]  "
+                    f"done={done}"
+                )
 
     print(f"\nSync complete. {done}/{len(to_copy)} objects copied to s3://{DST_BUCKET}")
 

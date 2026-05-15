@@ -1,68 +1,83 @@
 import io
-import math
-import os
 import random
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT",  "http://localhost:9000")
-MINIO_ACCESS   = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET   = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-SRC_BUCKET     = os.getenv("SRC_BUCKET",  "air-quality-historical")
-DST_BUCKET     = os.getenv("DST_BUCKET",  "air-quality-minutely")
-JITTER_FRAC    = float(os.getenv("JITTER_FRAC", "0.05"))
-WORKERS        = int(os.getenv("WORKERS", "8"))
-
-POLLUTANTS = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
-
-_SCHEMA = pa.schema([
-    pa.field("sensor_id",    pa.string()),
-    pa.field("station_name", pa.string()),
-    pa.field("city",         pa.string()),
-    pa.field("region",       pa.string()),
-    pa.field("country",      pa.string()),
-    pa.field("latitude",     pa.float64()),
-    pa.field("longitude",    pa.float64()),
-    pa.field("timestamp",    pa.string()),
-    pa.field("date",         pa.string()),
-    pa.field("aqi",          pa.int32()),
-    pa.field("co",           pa.float64()),
-    pa.field("no",           pa.float64()),
-    pa.field("no2",          pa.float64()),
-    pa.field("o3",           pa.float64()),
-    pa.field("so2",          pa.float64()),
-    pa.field("pm2_5",        pa.float64()),
-    pa.field("pm10",         pa.float64()),
-    pa.field("nh3",          pa.float64()),
-])
-
+from config import (
+    AQI_BREAKPOINTS,
+    AQI_MAX_LEVEL,
+    DST_BUCKET,
+    HISTORY_PERIOD_DAYS,
+    JITTER_FRAC,
+    MINIO_ACCESS,
+    MINIO_ENDPOINT,
+    MINIO_REGION,
+    MINIO_SECRET,
+    MINUTES_PER_HOUR,
+    PARQUET_SCHEMA,
+    REPLAY_SPEED_DEFAULT,
+    SRC_BUCKET,
+    WORKERS,
+)
 
 
 def _sub_index(value: float, breakpoints: list) -> int:
+    """Map a pollutant concentration to its 1-5 AQI sub-index.
+
+    Args:
+        value: Pollutant concentration.
+        breakpoints: Ascending list of upper bounds for levels 1..4.
+
+    Returns:
+        Integer AQI level in the closed range ``[1, AQI_MAX_LEVEL]``.
+    """
     for level, threshold in enumerate(breakpoints, start=1):
         if value <= threshold:
             return level
-    return 5
+    return AQI_MAX_LEVEL
 
 
 def compute_aqi(pm2_5: float, pm10: float, no2: float, o3: float, so2: float) -> int:
+    """Compute the European Air Quality Index for a set of pollutants.
+
+    The composite AQI is the maximum sub-index across PM2.5, PM10, NO2,
+    O3 and SO2 according to :data:`AQI_BREAKPOINTS`.
+
+    Args:
+        pm2_5: PM2.5 concentration in µg/m³.
+        pm10: PM10 concentration in µg/m³.
+        no2: NO2 concentration in µg/m³.
+        o3: O3 concentration in µg/m³.
+        so2: SO2 concentration in µg/m³.
+
+    Returns:
+        Integer AQI level in the closed range ``[1, AQI_MAX_LEVEL]``.
+    """
     return max(
-        _sub_index(pm2_5, [10,  20,  25,  50]),
-        _sub_index(pm10,  [20,  40,  50,  100]),
-        _sub_index(no2,   [40,  90,  120, 230]),
-        _sub_index(o3,    [60,  100, 130, 240]),
-        _sub_index(so2,   [100, 200, 350, 500]),
+        _sub_index(pm2_5, AQI_BREAKPOINTS["pm2_5"]),
+        _sub_index(pm10, AQI_BREAKPOINTS["pm10"]),
+        _sub_index(no2, AQI_BREAKPOINTS["no2"]),
+        _sub_index(o3, AQI_BREAKPOINTS["o3"]),
+        _sub_index(so2, AQI_BREAKPOINTS["so2"]),
     )
 
 
-
 def _jitter(value: float) -> float:
+    """Apply Gaussian noise to a non-negative pollutant value.
+
+    Args:
+        value: Original pollutant concentration.
+
+    Returns:
+        A non-negative value perturbed by a Gaussian with standard deviation
+        ``|value| * JITTER_FRAC``, rounded to two decimal places.
+    """
     if value == 0.0:
         return 0.0
     noisy = random.gauss(value, abs(value) * JITTER_FRAC)
@@ -70,57 +85,80 @@ def _jitter(value: float) -> float:
 
 
 def expand_row(row: dict) -> list[dict]:
-    """Return 60 minute-level dicts from one hourly row."""
+    """Expand a single hourly row into 60 jittered minute-level rows.
+
+    Args:
+        row: An hourly reading row matching :data:`PARQUET_SCHEMA`.
+
+    Returns:
+        A list of :data:`MINUTES_PER_HOUR` per-minute rows whose timestamps
+        cover the hour starting at the row's hour boundary.
+    """
     base_ts = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
     base_ts = base_ts.replace(minute=0, second=0, microsecond=0)
 
     minutes = []
-    for m in range(60):
+    for m in range(MINUTES_PER_HOUR):
         ts = base_ts + timedelta(minutes=m)
-        co    = _jitter(row.get("co")   or 0.0)
-        no    = _jitter(row.get("no")   or 0.0)
-        no2   = _jitter(row.get("no2")  or 0.0)
-        o3    = _jitter(row.get("o3")   or 0.0)
-        so2   = _jitter(row.get("so2")  or 0.0)
+        co = _jitter(row.get("co") or 0.0)
+        no = _jitter(row.get("no") or 0.0)
+        no2 = _jitter(row.get("no2") or 0.0)
+        o3 = _jitter(row.get("o3") or 0.0)
+        so2 = _jitter(row.get("so2") or 0.0)
         pm2_5 = _jitter(row.get("pm2_5") or 0.0)
-        pm10  = _jitter(row.get("pm10")  or 0.0)
-        nh3   = _jitter(row.get("nh3")   or 0.0)
+        pm10 = _jitter(row.get("pm10") or 0.0)
+        nh3 = _jitter(row.get("nh3") or 0.0)
 
-        minutes.append({
-            "sensor_id":    row["sensor_id"],
-            "station_name": row["station_name"],
-            "city":         row["city"],
-            "region":       row.get("region", ""),
-            "country":      row.get("country", "UA"),
-            "latitude":     row["latitude"],
-            "longitude":    row["longitude"],
-            "timestamp":    ts.isoformat(),
-            "date":         ts.strftime("%Y-%m-%d"),
-            "aqi":          compute_aqi(pm2_5, pm10, no2, o3, so2),
-            "co":           co,
-            "no":           no,
-            "no2":          no2,
-            "o3":           o3,
-            "so2":          so2,
-            "pm2_5":        pm2_5,
-            "pm10":         pm10,
-            "nh3":          nh3,
-        })
+        minutes.append(
+            {
+                "sensor_id": row["sensor_id"],
+                "station_name": row["station_name"],
+                "city": row["city"],
+                "region": row.get("region", ""),
+                "country": row.get("country", "UA"),
+                "latitude": row["latitude"],
+                "longitude": row["longitude"],
+                "timestamp": ts.isoformat(),
+                "date": ts.strftime("%Y-%m-%d"),
+                "aqi": compute_aqi(pm2_5, pm10, no2, o3, so2),
+                "co": co,
+                "no": no,
+                "no2": no2,
+                "o3": o3,
+                "so2": so2,
+                "pm2_5": pm2_5,
+                "pm10": pm10,
+                "nh3": nh3,
+            }
+        )
     return minutes
 
 
-
 def make_client():
+    """Build a boto3 S3 client pointed at the configured MinIO endpoint.
+
+    Returns:
+        A configured boto3 S3 client instance.
+    """
     return boto3.client(
         "s3",
         endpoint_url=MINIO_ENDPOINT,
         aws_access_key_id=MINIO_ACCESS,
         aws_secret_access_key=MINIO_SECRET,
-        region_name="us-east-1",
+        region_name=MINIO_REGION,
     )
 
 
-def ensure_bucket(s3, bucket: str):
+def ensure_bucket(s3, bucket: str) -> None:
+    """Ensure a bucket exists, creating it if necessary.
+
+    Args:
+        s3: A boto3 S3 client.
+        bucket: Name of the bucket to ensure.
+
+    Returns:
+        None.
+    """
     try:
         s3.head_bucket(Bucket=bucket)
     except ClientError:
@@ -129,6 +167,16 @@ def ensure_bucket(s3, bucket: str):
 
 
 def key_exists(s3, bucket: str, key: str) -> bool:
+    """Check whether an object key exists in a bucket.
+
+    Args:
+        s3: A boto3 S3 client.
+        bucket: Target bucket name.
+        key: Object key to probe.
+
+    Returns:
+        ``True`` if the object exists, ``False`` otherwise.
+    """
     try:
         s3.head_object(Bucket=bucket, Key=key)
         return True
@@ -137,6 +185,14 @@ def key_exists(s3, bucket: str, key: str) -> bool:
 
 
 def list_source_keys(s3) -> list[str]:
+    """List all Parquet object keys in the source bucket.
+
+    Args:
+        s3: A boto3 S3 client.
+
+    Returns:
+        A list of object keys whose names end with ``.parquet``.
+    """
     paginator = s3.get_paginator("list_objects_v2")
     keys = []
     for page in paginator.paginate(Bucket=SRC_BUCKET):
@@ -146,9 +202,16 @@ def list_source_keys(s3) -> list[str]:
     return keys
 
 
-
 def process_key(key: str) -> tuple[str, int]:
-    """Read one source Parquet, expand, upload to dst bucket. Returns (key, rows_written)."""
+    """Expand one source Parquet file into the destination bucket.
+
+    Args:
+        key: Source object key inside :data:`SRC_BUCKET`.
+
+    Returns:
+        A two-tuple ``(key, rows_written)``. ``rows_written`` is ``0`` when
+        the destination object already exists or the source had no rows.
+    """
     s3 = make_client()
 
     if key_exists(s3, DST_BUCKET, key):
@@ -164,30 +227,39 @@ def process_key(key: str) -> tuple[str, int]:
     if not expanded:
         return (key, 0)
 
-    table = pa.Table.from_pylist(expanded, schema=_SCHEMA)
-    buf   = io.BytesIO()
+    table = pa.Table.from_pylist(expanded, schema=PARQUET_SCHEMA)
+    buf = io.BytesIO()
     pq.write_table(table, buf, compression="snappy")
     buf.seek(0)
     s3.put_object(Bucket=DST_BUCKET, Key=key, Body=buf.getvalue())
     return (key, len(expanded))
 
 
+def main() -> None:
+    """Run the hourly-to-minutely expansion across the entire source bucket.
 
-def main():
+    Returns:
+        None.
+    """
     s3 = make_client()
 
     print(f"Source : s3://{SRC_BUCKET}")
     print(f"Dest   : s3://{DST_BUCKET}")
-    print(f"Jitter : ±{JITTER_FRAC*100:.0f}%  Workers: {WORKERS}")
+    print(f"Jitter : ±{JITTER_FRAC * 100:.0f}%  Workers: {WORKERS}")
 
     ensure_bucket(s3, DST_BUCKET)
 
     keys = list_source_keys(s3)
     if not keys:
-        print("No Parquet files found in source bucket — run historical_loader.py first.")
+        print(
+            "No Parquet files found in source bucket — run historical_loader.py first."
+        )
         sys.exit(1)
 
-    print(f"Found {len(keys):,} source files — expanding each hourly row → 60 minute rows\n")
+    print(
+        f"Found {len(keys):,} source files — expanding each hourly row → "
+        f"{MINUTES_PER_HOUR} minute rows\n"
+    )
 
     done = skipped = total_rows = 0
 
@@ -203,14 +275,23 @@ def main():
 
             if i % 500 == 0 or i == len(keys):
                 pct = i / len(keys) * 100
-                print(f"  [{i:>6}/{len(keys)}  {pct:5.1f}%]  "
-                      f"written={done}  skipped={skipped}  rows≈{total_rows:,}")
+                print(
+                    f"  [{i:>6}/{len(keys)}  {pct:5.1f}%]  "
+                    f"written={done}  skipped={skipped}  rows≈{total_rows:,}"
+                )
 
     print(f"\nDone.  {done} files written, {skipped} skipped (already existed).")
     print(f"Total minute-level rows: {total_rows:,}")
     if total_rows:
-        rate_per_min = total_rows / (31 * 24 * 60) * 60  # rows/min at REPLAY_SPEED=60
-        print(f"Expected replay rate at REPLAY_SPEED=60: ~{rate_per_min:,.0f} events/min")
+        rate_per_min = (
+            total_rows
+            / (HISTORY_PERIOD_DAYS * 24 * MINUTES_PER_HOUR)
+            * MINUTES_PER_HOUR
+        )
+        print(
+            f"Expected replay rate at REPLAY_SPEED={REPLAY_SPEED_DEFAULT}: "
+            f"~{rate_per_min:,.0f} events/min"
+        )
 
 
 if __name__ == "__main__":

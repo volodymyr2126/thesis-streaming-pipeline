@@ -1,12 +1,10 @@
 import io
 import json
 import math
-import os
 import statistics
 import time
 import zipfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import boto3
 import pyarrow as pa
@@ -14,68 +12,46 @@ import pyarrow.parquet as pq
 import requests
 from botocore.exceptions import ClientError
 
-# ── config ────────────────────────────────────────────────────────────────────
-OWM_API_KEY = os.environ["OWM_API_KEY"]
-
-GEONAMES_URL   = "https://download.geonames.org/export/dump/UA.zip"
-OWM_URL        = "https://api.openweathermap.org/data/2.5/air_pollution/history"
-DAYS_HISTORY   = int(os.getenv("DAYS_HISTORY", "30"))
-MIN_POPULATION = int(os.getenv("MIN_POPULATION", "10000"))
-
-_ADMIN1_TO_REGION = {
-    "01": "Cherkasy Oblast",
-    "02": "Chernihiv Oblast",
-    "03": "Chernivtsi Oblast",
-    "05": "Dnipropetrovsk Oblast",
-    "06": "Donetsk Oblast",
-    "07": "Ivano-Frankivsk Oblast",
-    "08": "Kharkiv Oblast",
-    "09": "Kherson Oblast",
-    "10": "Khmelnytskyi Oblast",
-    "11": "Kyiv Oblast",
-    "12": "Kyiv City",
-    "13": "Kirovohrad Oblast",
-    "14": "Luhansk Oblast",
-    "15": "Lviv Oblast",
-    "16": "Mykolaiv Oblast",
-    "17": "Odessa Oblast",
-    "18": "Poltava Oblast",
-    "19": "Rivne Oblast",
-    "20": "Sumy Oblast",
-    "21": "Ternopil Oblast",
-    "22": "Vinnytsia Oblast",
-    "23": "Volyn Oblast",
-    "24": "Zakarpattia Oblast",
-    "25": "Zaporizhzhia Oblast",
-    "26": "Zhytomyr Oblast",
-}
-
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT",  "http://localhost:9000")
-MINIO_ACCESS   = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET   = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET   = os.getenv("MINIO_BUCKET",     "air-quality-historical")
-
-REPO_ROOT    = Path(__file__).parent.parent
-BASELINES_OUT = Path(os.getenv(
-    "BASELINES_OUT",
-    str(REPO_ROOT / "flink-jobs" / "src" / "baselines" / "baselines.json"),
-))
-
-POLLUTANTS = ["co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
+from config import (
+    ADMIN1_TO_REGION,
+    BASELINES_OUT,
+    DAYS_HISTORY,
+    GEONAMES_REQUEST_TIMEOUT_SECONDS,
+    GEONAMES_URL,
+    MIN_POPULATION,
+    MIN_SAMPLES_FOR_STATS,
+    MIN_STD,
+    MINIO_ACCESS,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_REGION,
+    MINIO_SECRET,
+    OWM_API_KEY,
+    OWM_REQUEST_TIMEOUT_SECONDS,
+    OWM_URL,
+    PARQUET_SCHEMA,
+    PER_STATION_SLEEP_SECONDS,
+    POLLUTANTS,
+    ROUND_DECIMALS,
+)
 
 
 def fetch_geonames_stations() -> list[dict]:
-    """Download the GeoNames Ukraine dump and return all populated places
-    with population ≥ MIN_POPULATION as virtual sensor stations.
+    """Download the GeoNames Ukraine dump and yield virtual sensor stations.
 
-    GeoNames tab-separated columns (index):
-      0  geonameid   6  feature_class   10 admin1_code   14 population
-      1  name        7  feature_code    11 admin2_code
-      4  latitude    8  country_code
-      5  longitude
+    Filters the dump to populated places (``feature_class = 'P'``) in Ukraine
+    whose recorded population is at least :data:`MIN_POPULATION`.
+
+    Returns:
+        A list of station dictionaries with ``sensor_id``, ``station_name``,
+        ``city``, ``region``, ``country``, ``latitude`` and ``longitude`` keys,
+        sorted alphabetically by city.
+
+    Raises:
+        requests.HTTPError: If the GeoNames dump cannot be downloaded.
     """
     print(f"Downloading GeoNames Ukraine dump from {GEONAMES_URL} ...")
-    resp = requests.get(GEONAMES_URL, timeout=60)
+    resp = requests.get(GEONAMES_URL, timeout=GEONAMES_REQUEST_TIMEOUT_SECONDS)
     resp.raise_for_status()
 
     stations: list[dict] = []
@@ -87,8 +63,8 @@ def fetch_geonames_stations() -> list[dict]:
                 if len(cols) < 15:
                     continue
                 feature_class = cols[6]
-                feature_code  = cols[7]
-                country_code  = cols[8]
+                feature_code = cols[7]
+                country_code = cols[8]
                 if feature_class != "P" or country_code != "UA":
                     continue
                 if feature_code in ("PPLX",):
@@ -101,55 +77,96 @@ def fetch_geonames_stations() -> list[dict]:
                     continue
 
                 geonames_id = cols[0]
-                name        = cols[1]
-                lat         = float(cols[4])
-                lon         = float(cols[5])
-                admin1      = cols[10]
-                region      = _ADMIN1_TO_REGION.get(admin1, "")
+                name = cols[1]
+                lat = float(cols[4])
+                lon = float(cols[5])
+                admin1 = cols[10]
+                region = ADMIN1_TO_REGION.get(admin1, "")
 
-                stations.append({
-                    "sensor_id":    f"ua_{geonames_id}",
-                    "station_name": name,
-                    "city":         name,
-                    "region":       region,
-                    "country":      "UA",
-                    "latitude":     lat,
-                    "longitude":    lon,
-                })
+                stations.append(
+                    {
+                        "sensor_id": f"ua_{geonames_id}",
+                        "station_name": name,
+                        "city": name,
+                        "region": region,
+                        "country": "UA",
+                        "latitude": lat,
+                        "longitude": lon,
+                    }
+                )
 
     stations.sort(key=lambda s: s["city"])
-    print(f"Found {len(stations)} Ukrainian populated places "
-          f"with population ≥ {MIN_POPULATION:,}")
+    print(
+        f"Found {len(stations)} Ukrainian populated places "
+        f"with population ≥ {MIN_POPULATION:,}"
+    )
     return stations
 
 
-
 def fetch_history(lat: float, lon: float) -> list[dict]:
-    end   = int(datetime.now(timezone.utc).timestamp())
-    start = int((datetime.now(timezone.utc) - timedelta(days=DAYS_HISTORY)).timestamp())
+    """Fetch hourly air-pollution history for a coordinate from OpenWeatherMap.
 
-    resp = requests.get(OWM_URL, params={
-        "lat":   lat,
-        "lon":   lon,
-        "start": start,
-        "end":   end,
-        "appid": OWM_API_KEY,
-    }, timeout=30)
+    Args:
+        lat: Latitude of the sensor location.
+        lon: Longitude of the sensor location.
+
+    Returns:
+        The raw ``list`` field of the OWM history response (may be empty).
+
+    Raises:
+        requests.HTTPError: If the OWM endpoint returns a non-2xx status.
+    """
+    end = int(datetime.now(UTC).timestamp())
+    start = int((datetime.now(UTC) - timedelta(days=DAYS_HISTORY)).timestamp())
+
+    resp = requests.get(
+        OWM_URL,
+        params={
+            "lat": lat,
+            "lon": lon,
+            "start": start,
+            "end": end,
+            "appid": OWM_API_KEY,
+        },
+        timeout=OWM_REQUEST_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
     return resp.json().get("list", [])
 
 
-
 def _stats(values: list[float]) -> dict:
+    """Compute mean and standard deviation, dropping NaN/None inputs.
+
+    Args:
+        values: Raw numeric samples that may contain ``None`` or NaN.
+
+    Returns:
+        A dict ``{"mean": float | None, "std": float | None}``. Both fields
+        are ``None`` when fewer than :data:`MIN_SAMPLES_FOR_STATS` valid
+        samples are available; otherwise ``std`` is clamped to
+        :data:`MIN_STD`.
+    """
     clean = [v for v in values if v is not None and not math.isnan(v)]
-    if len(clean) < 2:
+    if len(clean) < MIN_SAMPLES_FOR_STATS:
         return {"mean": None, "std": None}
     mean = statistics.mean(clean)
-    std  = statistics.stdev(clean)
-    return {"mean": round(mean, 4), "std": max(round(std, 4), 0.1)}
+    std = statistics.stdev(clean)
+    return {
+        "mean": round(mean, ROUND_DECIMALS),
+        "std": max(round(std, ROUND_DECIMALS), MIN_STD),
+    }
 
 
 def compute_baselines(readings: list[dict]) -> dict:
+    """Compute per-pollutant baseline statistics for a sensor.
+
+    Args:
+        readings: OpenWeatherMap history entries for a single sensor.
+
+    Returns:
+        A mapping ``{pollutant: {"mean": ..., "std": ...}}`` covering every
+        pollutant in :data:`POLLUTANTS` plus ``aqi``.
+    """
     buckets: dict[str, list] = {p: [] for p in POLLUTANTS}
     aqi_vals = []
 
@@ -168,57 +185,54 @@ def compute_baselines(readings: list[dict]) -> dict:
     return result
 
 
-
-_PARQUET_SCHEMA = pa.schema([
-    pa.field("sensor_id",    pa.string()),
-    pa.field("station_name", pa.string()),
-    pa.field("city",         pa.string()),
-    pa.field("region",       pa.string()),
-    pa.field("country",      pa.string()),
-    pa.field("latitude",     pa.float64()),
-    pa.field("longitude",    pa.float64()),
-    pa.field("timestamp",    pa.string()),
-    pa.field("date",         pa.string()),
-    pa.field("aqi",          pa.int32()),
-    pa.field("co",           pa.float64()),
-    pa.field("no",           pa.float64()),
-    pa.field("no2",          pa.float64()),
-    pa.field("o3",           pa.float64()),
-    pa.field("so2",          pa.float64()),
-    pa.field("pm2_5",        pa.float64()),
-    pa.field("pm10",         pa.float64()),
-    pa.field("nh3",          pa.float64()),
-])
-
-
 def _owm_to_row(entry: dict, station: dict) -> dict:
-    c  = entry.get("components", {})
-    dt = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
+    """Convert an OWM history entry plus station metadata to a flat row.
+
+    Args:
+        entry: A single element from the OWM history ``list`` field.
+        station: Station metadata dict with ``sensor_id`` and coordinates.
+
+    Returns:
+        A dictionary matching :data:`PARQUET_SCHEMA`.
+    """
+    c = entry.get("components", {})
+    dt = datetime.fromtimestamp(entry["dt"], tz=UTC)
     return {
-        "sensor_id":    station["sensor_id"],
+        "sensor_id": station["sensor_id"],
         "station_name": station["station_name"],
-        "city":         station["city"],
-        "region":       station.get("region", ""),
-        "country":      station["country"],
-        "latitude":     station["latitude"],
-        "longitude":    station["longitude"],
-        "timestamp":    dt.isoformat(),
-        "date":         dt.strftime("%Y-%m-%d"),
-        "aqi":          entry.get("main", {}).get("aqi"),
-        "co":           c.get("co"),
-        "no":           c.get("no"),
-        "no2":          c.get("no2"),
-        "o3":           c.get("o3"),
-        "so2":          c.get("so2"),
-        "pm2_5":        c.get("pm2_5"),
-        "pm10":         c.get("pm10"),
-        "nh3":          c.get("nh3"),
+        "city": station["city"],
+        "region": station.get("region", ""),
+        "country": station["country"],
+        "latitude": station["latitude"],
+        "longitude": station["longitude"],
+        "timestamp": dt.isoformat(),
+        "date": dt.strftime("%Y-%m-%d"),
+        "aqi": entry.get("main", {}).get("aqi"),
+        "co": c.get("co"),
+        "no": c.get("no"),
+        "no2": c.get("no2"),
+        "o3": c.get("o3"),
+        "so2": c.get("so2"),
+        "pm2_5": c.get("pm2_5"),
+        "pm10": c.get("pm10"),
+        "nh3": c.get("nh3"),
     }
 
 
-def upload_parquet(s3, rows: list[dict], sensor_id: str, date: str):
-    table = pa.Table.from_pylist(rows, schema=_PARQUET_SCHEMA)
-    buf   = io.BytesIO()
+def upload_parquet(s3, rows: list[dict], sensor_id: str, date: str) -> None:
+    """Write a list of rows as a Parquet file to MinIO/S3.
+
+    Args:
+        s3: A boto3 S3 client.
+        rows: Row dicts matching :data:`PARQUET_SCHEMA`.
+        sensor_id: Sensor identifier used in the object key.
+        date: ISO date (``YYYY-MM-DD``) used as a partition prefix.
+
+    Returns:
+        None.
+    """
+    table = pa.Table.from_pylist(rows, schema=PARQUET_SCHEMA)
+    buf = io.BytesIO()
     pq.write_table(table, buf, compression="snappy")
     buf.seek(0)
     key = f"sensor_id={sensor_id}/date={date}/readings.parquet"
@@ -226,7 +240,15 @@ def upload_parquet(s3, rows: list[dict], sensor_id: str, date: str):
     print(f"  uploaded s3://{MINIO_BUCKET}/{key}  ({len(rows)} rows)")
 
 
-def ensure_bucket(s3):
+def ensure_bucket(s3) -> None:
+    """Ensure the configured MinIO bucket exists, creating it if necessary.
+
+    Args:
+        s3: A boto3 S3 client.
+
+    Returns:
+        None.
+    """
     try:
         s3.head_bucket(Bucket=MINIO_BUCKET)
     except ClientError:
@@ -235,23 +257,41 @@ def ensure_bucket(s3):
 
 
 def bucket_has_data(s3) -> bool:
+    """Return whether the configured bucket already contains any object.
+
+    Args:
+        s3: A boto3 S3 client.
+
+    Returns:
+        ``True`` if the bucket has at least one object, ``False`` otherwise.
+    """
     resp = s3.list_objects_v2(Bucket=MINIO_BUCKET, MaxKeys=1)
     return resp.get("KeyCount", 0) > 0
 
 
+def main() -> None:
+    """Run the full historical-loader workflow.
 
-def main():
+    Downloads GeoNames, fetches OWM history per station, computes baselines,
+    uploads per-day Parquet shards to MinIO and writes a station metadata
+    file alongside.
+
+    Returns:
+        None.
+    """
     s3 = boto3.client(
         "s3",
         endpoint_url=MINIO_ENDPOINT,
         aws_access_key_id=MINIO_ACCESS,
         aws_secret_access_key=MINIO_SECRET,
-        region_name="us-east-1",
+        region_name=MINIO_REGION,
     )
     ensure_bucket(s3)
 
     if bucket_has_data(s3):
-        print(f"Bucket '{MINIO_BUCKET}' already contains data — skipping historical load.")
+        print(
+            f"Bucket '{MINIO_BUCKET}' already contains data — skipping historical load."
+        )
         return
 
     stations = fetch_geonames_stations()
@@ -278,14 +318,14 @@ def main():
 
         by_date: dict[str, list] = {}
         for entry in raw:
-            row  = _owm_to_row(entry, station)
+            row = _owm_to_row(entry, station)
             date = row["date"]
             by_date.setdefault(date, []).append(row)
 
         for date, rows in by_date.items():
             upload_parquet(s3, rows, sid, date)
 
-        time.sleep(0.2)
+        time.sleep(PER_STATION_SLEEP_SECONDS)
 
     BASELINES_OUT.parent.mkdir(parents=True, exist_ok=True)
     BASELINES_OUT.write_text(json.dumps(all_baselines, indent=2))
@@ -301,7 +341,10 @@ def main():
         Key="stations.json",
         Body=json.dumps(station_meta).encode(),
     )
-    print(f"Station metadata written → s3://{MINIO_BUCKET}/stations.json  ({len(station_meta)} stations)")
+    print(
+        f"Station metadata written → s3://{MINIO_BUCKET}/stations.json  "
+        f"({len(station_meta)} stations)"
+    )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-from typing import Optional
 from pydantic import BaseModel
 
 
@@ -12,13 +11,13 @@ class SensorReading(BaseModel):
     latitude: float
     longitude: float
     timestamp: str
-    co: Optional[float]
-    no: Optional[float]
-    no2: Optional[float]
-    o3: Optional[float]
-    so2: Optional[float]
-    pm2_5: Optional[float]
-    pm10: Optional[float]
-    nh3: Optional[float]
-    aqi: Optional[int]
+    co: float | None
+    no: float | None
+    no2: float | None
+    o3: float | None
+    so2: float | None
+    pm2_5: float | None
+    pm10: float | None
+    nh3: float | None
+    aqi: int | None
     is_anomaly: bool

@@ -1,0 +1,19 @@
+line-length = 88
+target-version = "py311"
+extend-exclude = [
+    ".venv311",
+    "text_part",
+    "flink-jobs/src/baselines",
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["E501"]
+
+[lint.isort]
+known-first-party = ["config", "producers", "alerting", "scripts"]
